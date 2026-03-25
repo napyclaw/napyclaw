@@ -152,8 +152,9 @@ class Config:
     db_path: Path                 # SQLite file path. Created if missing.
     groups_dir: Path              # Parent dir for per-group MEMORY.md files. Created if missing.
 
-    # Agent tuning
-    max_history_tokens: int       # Default 8000. Estimated by character count (4 chars ≈ 1 token).
+    # Agent tuning (all optional — dynamic budget used when absent)
+    max_history_tokens: int | None  # Hard override for history budget. None = use dynamic calculation.
+                                    # Set this only if you need explicit control over context usage.
 
     @classmethod
     def from_infisical(cls) -> "Config":
@@ -167,18 +168,26 @@ class Config:
 ```python
 class LLMClient(ABC):
     model: str
-    provider: str   # "openai" | "ollama"
+    provider: str       # "openai" | "ollama"
+    context_window: int # fetched or looked up at init — used by Agent for history budgeting
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResponse: ...
     async def stream(self, messages: list[dict], tools: list[dict] | None = None) -> AsyncIterator[str]: ...
 
 class OpenAIClient(LLMClient):
-    # Uses openai Python SDK pointing at openai_base_url
     provider = "openai"
+    # context_window looked up from a hardcoded table keyed by model name:
+    # "gpt-4o": 128000, "gpt-4o-mini": 128000, "gpt-3.5-turbo": 16385, etc.
+    # Unknown models default to 8192 (conservative)
 
 class OllamaClient(LLMClient):
-    # Uses openai Python SDK with base_url = ollama_base_url, api_key = ollama_api_key
     provider = "ollama"
+    # context_window fetched from Ollama API at init:
+    # GET {ollama_base_url}/api/show {"model": model_name}
+    # → response["model_info"]["llama.context_length"]
+    # Falls back to 2048 if endpoint unreachable or field missing
+    # NOTE: Ollama's default serving context is often 2048 regardless of model capability.
+    # Users must set num_ctx explicitly — see setup guide.
 ```
 
 `chat()` returns a full `ChatResponse`. `stream()` yields text tokens incrementally and is used only for final text responses (no tool calls present). Tool calls always use `chat()` since the full response must be received before tools can execute.
@@ -251,7 +260,43 @@ class Agent:
         # 7. Return response.text
 ```
 
-**Conversation history persistence:** `self.history` (list of OpenAI-format message dicts) is persisted to the DB as JSON after every turn. On startup, `NapyClaw` reconstructs each group's `Agent` with its stored history. History is pruned when it exceeds `config.max_history_tokens` (default 8000, estimated at 4 chars per token): the system message is always kept. Pruning removes complete exchange blocks from oldest-first — a block is defined as one `user` message plus all subsequent `assistant` and `tool` messages up to the next `user` message. This ensures tool call / tool result pairs are never split.
+**Conversation history persistence:** `self.history` (list of OpenAI-format message dicts) is persisted to the DB as JSON after every turn. On startup, `NapyClaw` reconstructs each group's `Agent` with its stored history.
+
+**Dynamic history budget** — calculated per turn via `Agent._history_budget()`:
+
+```python
+def _history_budget(self) -> int:
+    # OB1 active: history only needs to cover the current thread (~20 exchanges)
+    # OB1 absent: history carries more long-term recall weight
+    ratio = 0.15 if isinstance(self.memory, OB1Memory) else 0.30
+
+    # Cap at ~20 exchanges regardless of model size — OB1 handles older recall
+    max_turns_cap = 20 * 300  # ~6,000 tokens (300 avg tokens per exchange)
+
+    budget = min(
+        int(self.client.context_window * ratio),
+        max_turns_cap,
+    )
+
+    # Hard override from Infisical if operator wants explicit control
+    if self.config.max_history_tokens:
+        budget = self.config.max_history_tokens
+
+    return budget
+```
+
+Examples at runtime:
+| Model | Context window | OB1 active | History budget |
+|---|---|---|---|
+| llama3.3:70b (Ollama, num_ctx=64k) | 65536 | Yes | ~6,000 tokens (~20 exchanges) |
+| llama3.3:70b (Ollama, num_ctx=64k) | 65536 | No | ~6,000 tokens (capped at max_turns) |
+| llama3.3 (Ollama default, 2048) | 2048 | Yes | ~307 tokens (~3 exchanges) |
+| gpt-4o | 128000 | Yes | ~6,000 tokens (capped at max_turns) |
+| gpt-4o | 128000 | No | ~6,000 tokens (capped at max_turns) |
+
+The cap at ~20 exchanges means large-context models don't waste tokens on stale history — OB1 semantic retrieval surfaces older relevant context when needed. Only on small Ollama models (default 2048 context) does the budget compress below the cap, which is why **setting `num_ctx` correctly is the most important Ollama setup step** (see setup guide).
+
+Pruning removes complete exchange blocks oldest-first — a block is one `user` message plus all subsequent `assistant` and `tool` messages up to the next `user` message. Tool call / tool result pairs are never split.
 
 ### Tool
 
@@ -702,7 +747,7 @@ Hard fail: `"Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and INFISICA
 
 ### Agent loop safety
 - Max 10 tool call iterations per turn — `AgentLoopError` is raised, caught by `NapyClaw`, reported to user as `"I got stuck in a loop. Please try rephrasing your request."`
-- Conversation history pruned at 8000 estimated tokens: system prompt always kept, oldest user/assistant pairs dropped first
+- Conversation history pruned dynamically based on `client.context_window`, memory backend, and optional `config.max_history_tokens` override. System prompt always kept; oldest exchange blocks dropped first.
 
 ### Scheduler resilience
 - Failed tasks: up to 3 retries with exponential backoff (5s base, doubling: 5s, 10s, 20s). If a task has a model override and `LLMUnavailableError` is raised, the scheduler catches it and retries that run using `context.active_client` before counting it as a failure.
