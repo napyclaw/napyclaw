@@ -46,7 +46,9 @@ napyclaw/
 │   ├── base.py          # Channel abstract base class + Message dataclass
 │   └── slack.py         # SlackChannel — Socket Mode via slack-bolt
 ├── scheduler.py         # Scheduler class — APScheduler, polls DB, fires due tasks
-├── memory.py            # MemoryBackend ABC, MarkdownMemory, OB1Memory implementations
+├── memory.py            # MemoryBackend ABC, MarkdownMemory, OB1Memory, NullMemory
+├── shield.py            # ContentShield — credential/PII detection before any storage
+├── private_session.py   # PrivateSession — ephemeral DM session, no persistence
 └── oauth.py             # OAuthCallbackServer — lightweight HTTP listener for OAuth flows
 ```
 
@@ -403,6 +405,143 @@ tools/recipes/
 └── ...                 # One file per OB1 recipe
 ```
 
+### ContentShield
+
+Defined in `shield.py`. Runs on **all content before any storage** — inbound Slack messages, OB1 captures, and recipe import batches. Uses two libraries:
+- **[detect-secrets](https://github.com/Yelp/detect-secrets)** (Yelp) — API keys, tokens, passwords, private keys, high-entropy strings, JWTs, passwords in URLs
+- **[Microsoft Presidio](https://github.com/microsoft/presidio)** — PII entity recognition (SSNs, credit cards, phone numbers, emails, names, addresses)
+
+```python
+@dataclass
+class Detection:
+    type: str           # e.g. "api_key", "ssn", "credit_card", "phone_number"
+    redacted: bool      # True = replaced in output; False = allowed through
+    span: tuple[int, int]
+
+@dataclass
+class ShieldResult:
+    clean_text: str             # Text safe to store (credentials/SSNs redacted)
+    detections: list[Detection]
+    has_blocked: bool           # True if any redactions occurred
+    has_credentials: bool       # True if detect-secrets found anything
+
+class ContentShield:
+    def scan(self, text: str) -> ShieldResult: ...
+    # Runs detect-secrets + Presidio, applies policy, returns clean_text
+```
+
+**Policy (two-tier):**
+
+| Data type | Library | Action |
+|---|---|---|
+| API keys, tokens, passwords, private keys, high-entropy strings, JWTs | detect-secrets | Redact to `[REDACTED:secret]` |
+| Social Security Numbers | Presidio | Redact to `[REDACTED:ssn]` |
+| Credit card numbers | Presidio | Redact to `[REDACTED:credit_card]` |
+| Phone numbers | Presidio | Allow — stored as-is |
+| Email addresses | Presidio | Allow — stored as-is |
+| Names, addresses | Presidio | Allow — stored as-is |
+
+**Where ContentShield is applied:**
+
+1. **Inbound Slack messages** (in `NapyClaw.handle_message`):
+   - `scan()` runs before SQLite storage
+   - `clean_text` is what gets stored and passed to the agent
+   - If `has_credentials=True`: send warning in Slack, offer private mode
+   - The unredacted original is never stored anywhere
+
+2. **OB1/memory captures** (in `MemoryBackend.capture`):
+   - `scan()` runs on content before embedding
+   - Always redact silently — never block (don't lose context)
+
+3. **Recipe imports** (in `RecipeTool.execute`):
+   - `scan()` runs per chunk before batch embed
+   - Summary reported at end: `"Imported 1,847 thoughts. Redacted credentials in 3 chunks."`
+
+### PrivateSession
+
+Defined in `private_session.py`. An ephemeral session using the Slack DM channel between the user and the bot. No data is persisted — conversation exists only in memory and is wiped when the session ends.
+
+```python
+@dataclass
+class PrivateSession:
+    user_id: str                    # Slack user ID who initiated
+    dm_channel_id: str              # Slack DM channel ID (opened via conversations.open)
+    origin_group_id: str            # Group where private mode was triggered
+    agent: Agent                    # Ephemeral agent — NullMemory, no DB history persistence
+    created_at: datetime
+    last_activity: datetime         # Updated on each message; used for idle timeout
+```
+
+**`NullMemory(MemoryBackend)`** — used exclusively in private sessions:
+```python
+class NullMemory(MemoryBackend):
+    async def search(...) -> list[str]: return []
+    async def capture(...) -> None: pass    # silently discards everything
+    async def load_context(...) -> str: return ""
+```
+
+**Session lifecycle:**
+
+```
+Trigger (credential detected OR user requests):
+    ContentShield detects credential in message
+    OR user says "@Bot_napy start private session"
+        │
+        ▼
+    Bot opens DM via Slack conversations.open API
+    Bot sends in original channel:
+        "Switching to a private session in your DMs.
+         Nothing said there will be remembered."
+    Bot sends in DM:
+        "Private session started. I won't remember
+         anything from this conversation.
+         Say 'end private session' when you're done."
+        │
+        ▼
+    PrivateSession created — NullMemory, no DB writes
+    NapyClaw registers dm_channel_id → PrivateSession mapping
+        │
+        ▼
+    User converses in DM — agent runs normally, no persistence
+        │
+        ▼
+    Session ends:
+        User says "end private session"
+        OR 30-minute idle timeout
+        │
+        ▼
+    Bot deletes its own messages in DM (via chat.delete, bot messages only)
+    PrivateSession object destroyed — in-memory state wiped
+    Bot sends in original channel: "Private session ended."
+```
+
+**ContentShield still runs in private sessions** — credentials detected in private mode are still redacted before being passed to the LLM. The difference is that nothing is stored at all (not even the redacted version).
+
+**Explicit invocation:** Users can start a private session at any time, not only when credentials are detected:
+```
+@General_napy start private session
+→ "Opening a private DM session for you."
+```
+
+### Credential Help Text
+
+The agent's system prompt includes a concise credential guidance section so it can answer questions naturally:
+
+```
+CREDENTIAL GUIDANCE:
+- API keys, passwords, tokens → store in Infisical, never share in chat
+- Social Security Numbers → never share in chat or store in memory
+- Credit card numbers → never share in chat or store in memory
+- Phone numbers, email addresses → safe to share; I'll remember them
+- Names, addresses → safe to share; I'll remember them
+- If you need to work with a credential, start a private session first
+
+When asked how to store credentials, explain the Infisical workflow:
+add the key to Infisical under napyclaw, then I can use it via tools.
+```
+
+This means `@General_napy how should I store my OpenAI key?` gets a useful, accurate answer without any special tool needed.
+
 ### Channel
 
 ```python
@@ -497,11 +636,14 @@ SlackChannel — normalizes to Message (fetches channel_name via API if new grou
     │
     ▼
 NapyClaw.handle_message(msg)
-    │  1. Store message in DB
-    │  2. Check trigger (@default_name, @display_name, or @any_nickname) — case-insensitive
+    │  1. ContentShield.scan(msg.text)
+    │     → if has_credentials: store redacted version to DB, warn user, offer private mode
+    │     → else: store clean_text to DB
+    │  2. Check if msg is from an active PrivateSession DM → route to PrivateSession.handle()
+    │  3. Check trigger (@default_name, @display_name, or @any_nickname) — case-insensitive
     │     Also match Slack native mention <@BOT_USER_ID>
-    │  3. Get or create GroupContext for msg.group_id
-    │  4. queue.run(msg.group_id, _run_agent(context, msg))  ← returns immediately
+    │  4. Get or create GroupContext for msg.group_id
+    │  5. queue.run(msg.group_id, _run_agent(context, msg))  ← returns immediately
     ▼
 _run_agent(context, msg)  ← runs inside GroupQueue lock
     │  1. channel.set_typing(msg.group_id, True)
@@ -571,21 +713,33 @@ Hard fail: `"Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and INFISICA
 - `slack-bolt` handles reconnection automatically
 - Messages received during disconnect are not replayed (Socket Mode limitation); bot resumes normally after reconnect
 
+### ContentShield failures
+- If detect-secrets or Presidio raise an exception, `ContentShield.scan()` returns the original text flagged as `has_blocked=False` and logs the error — scanning failures never block message delivery. A warning is logged so the operator knows the shield is degraded.
+
+### Private session failures
+- If Slack DM cannot be opened (API error, user not in workspace), bot responds in original channel: `"Couldn't open a private DM. Please check your Slack DM settings."`
+- If private session idle-times out, bot sends a final DM: `"Private session ended due to inactivity."` then wipes state
+- Active private sessions are not persisted to DB — a napyclaw restart ends all active private sessions silently
+
 ### Database
 - aiosqlite with WAL mode for safe concurrent access (scheduler + agent runs overlap)
 - All writes wrapped in transactions
 - DB file and parent directory created at startup if missing
+- `private_sessions` table is NOT used — private sessions are intentionally in-memory only
 
 ---
 
 ## DB Schema (summary)
 
-| Table | Key columns |
-|---|---|
-| `messages` | `id`, `group_id`, `sender_id`, `sender_name`, `text`, `timestamp`, `channel_type` |
-| `group_contexts` | `group_id`, `default_name`, `display_name`, `nicknames` (JSON), `owner_id`, `provider`, `model`, `is_first_interaction`, `history` (JSON) |
-| `scheduled_tasks` | `id`, `group_id`, `owner_id`, `prompt`, `schedule_type`, `schedule_value`, `model`, `provider`, `status`, `next_run`, `retry_count`, `created_at` |
-| `task_run_log` | `id`, `task_id`, `ran_at`, `status`, `result_snippet`, `duration_ms` |
+| Table | Key columns | Notes |
+|---|---|---|
+| `messages` | `id`, `group_id`, `sender_id`, `sender_name`, `text`, `timestamp`, `channel_type` | `text` stores redacted version if ContentShield fired |
+| `group_contexts` | `group_id`, `default_name`, `display_name`, `nicknames` (JSON), `owner_id`, `provider`, `model`, `is_first_interaction`, `history` (JSON) | |
+| `scheduled_tasks` | `id`, `group_id`, `owner_id`, `prompt`, `schedule_type`, `schedule_value`, `model`, `provider`, `status`, `next_run`, `retry_count`, `created_at` | |
+| `task_run_log` | `id`, `task_id`, `ran_at`, `status`, `result_snippet`, `duration_ms` | |
+| `shield_log` | `id`, `group_id`, `sender_id`, `detection_types` (JSON), `timestamp` | Audit log of ContentShield detections. Never stores the original text or redacted content — only detection metadata. |
+
+Private sessions are **not persisted** — intentionally in-memory only.
 
 ---
 
@@ -595,6 +749,8 @@ Hard fail: `"Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and INFISICA
 - Unit tests for trigger matching (all name layers, case-insensitivity, Slack mention format)
 - Unit tests for `Scheduler` (mock DB, assert due tasks fire, assert retry backoff)
 - Unit tests for `RenameBot`/`SwitchModel` permission enforcement
+- Unit tests for `ContentShield` — known credential strings trigger redaction; phone/email pass through unmodified
+- Unit tests for `PrivateSession` — assert no DB writes occur, assert in-memory state wiped on end
 - Integration smoke test: real Slack → real Ollama round trip (manual, not CI)
 
 ---
