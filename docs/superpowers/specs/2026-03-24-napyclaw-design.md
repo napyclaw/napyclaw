@@ -5,6 +5,8 @@ _Date: 2026-03-24_
 
 napyclaw is a Python reimagining of nanoclaw — a multi-channel AI agent framework. The goal is readable, idiomatic Python that any Python developer can pick up and customize. It uses the OpenAI API (and any OpenAI-compatible endpoint) rather than the Claude SDK, supports Ollama over Tailscale for local inference, and ships with Slack (Socket Mode) out of the gate. WhatsApp and Telegram are planned but out of scope for this spec.
 
+It is designed primarily for **personal use** — one owner per napyclaw instance. Knowledge management is handled by an optional integration with **[napyclaw/OB1](https://github.com/napyclaw/OB1)**, a fork of [Open Brain](https://github.com/NateBJones-Projects/OB1) that adds group-scoped memory and per-user OAuth credential management. OB1 is optional — napyclaw falls back to per-group `MEMORY.md` files when OB1 is not configured.
+
 Core philosophy: **small enough to understand**. OOP architecture with clear class responsibilities, no magic, no frameworks beyond what's needed.
 
 ---
@@ -44,7 +46,8 @@ napyclaw/
 │   ├── base.py          # Channel abstract base class + Message dataclass
 │   └── slack.py         # SlackChannel — Socket Mode via slack-bolt
 ├── scheduler.py         # Scheduler class — APScheduler, polls DB, fires due tasks
-└── memory.py            # GroupMemory class — reads/writes per-group MEMORY.md file
+├── memory.py            # MemoryBackend ABC, MarkdownMemory, OB1Memory implementations
+└── oauth.py             # OAuthCallbackServer — lightweight HTTP listener for OAuth flows
 ```
 
 ---
@@ -134,6 +137,14 @@ class Config:
     # Web search
     brave_api_key: str            # Brave Search API key
 
+    # OB1 knowledge backend (optional — MarkdownMemory used if absent)
+    supabase_url: str | None      # e.g. https://xyz.supabase.co
+    supabase_service_role_key: str | None
+    ob1_access_key: str | None    # x-brain-key for OB1 MCP server
+
+    # OAuth callback server
+    oauth_callback_port: int      # Default 8765
+
     # Paths (stored in Infisical as config, not secrets)
     workspace_dir: Path           # Where file tools read/write. Created if missing.
     db_path: Path                 # SQLite file path. Created if missing.
@@ -221,13 +232,13 @@ class Agent:
         self,
         client: LLMClient,
         tools: list[Tool],
-        memory: GroupMemory,
+        memory: MemoryBackend,
         context: GroupContext,
         max_tool_iterations: int = 10,
     ): ...
 
     async def run(self, user_message: str) -> str:
-        # 1. Build system prompt from GroupMemory + context (names, current model, etc.)
+        # 1. Build system prompt from MemoryBackend + context (names, current model, etc.)
         # 2. Append user message to self.history (list of OpenAI message dicts)
         # 3. Call client.chat(self.history, tools=self.tool_schemas)
         # 4. If response.tool_calls:
@@ -271,13 +282,13 @@ class Tool(ABC):
 Permission enforcement is done inside each tool's `execute()` — the tool receives the `sender_id` of the current message and checks it against `GroupContext.owner_id`. Unauthorized attempts return an error string (e.g. `"Only the channel owner can rename me."`).
 
 Constructor injection per tool:
-- `FileReadTool`, `FileWriteTool`: receive `Config` (for `workspace_dir`) and `GroupMemory` (for resolving `MEMORY.md` path)
+- `FileReadTool`, `FileWriteTool`: receive `Config` (for `workspace_dir`) and `MemoryBackend` (for resolving `MEMORY.md` path)
 - `SendMessageTool`: receives `Channel` and `GroupContext`
 - `ScheduleTaskTool`: receives `Database` and `GroupContext`
 - `RenameBot`, `AddNickname`, `ClearNicknames`, `SwitchModel`: receive `Database` and `GroupContext`
 - `WebSearchTool`: receives `Config` (for `brave_api_key`)
 
-**FileWriteTool path resolution:** If `path == "MEMORY.md"` (case-insensitive), the write target is `GroupMemory.path` for the current group (not `workspace_dir`). All other paths are resolved relative to `workspace_dir` and must not escape it (path traversal check: reject any path containing `..`).
+**FileWriteTool path resolution:** If `path == "MEMORY.md"` (case-insensitive), the write target is `MemoryBackend.path` for the current group (not `workspace_dir`). All other paths are resolved relative to `workspace_dir` and must not escape it (path traversal check: reject any path containing `..`).
 
 **WebSearchTool:** Uses the Brave Search API (`https://api.search.brave.com/res/v1/web/search`). Brave API key stored in Infisical as `brave_api_key`.
 
@@ -285,22 +296,112 @@ Constructor injection per tool:
 
 **ScheduleTaskTool — `cancel` action:** Requires `task_id`. Sets `status = "paused"` in DB. Returns error if task not found or belongs to a different group.
 
-### GroupMemory
+### MemoryBackend (knowledge management)
+
+napyclaw supports two memory backends, selected automatically at startup based on whether `SUPABASE_URL` is present in Infisical.
 
 ```python
-class GroupMemory:
-    path: Path   # {groups_dir}/{group_id}/MEMORY.md
+class MemoryBackend(ABC):
+    @abstractmethod
+    async def search(self, query: str, group_id: str, top_k: int = 5) -> list[str]: ...
+    # Returns relevant memory strings to inject into the agent system prompt
 
-    def load(self) -> str: ...
-    # Returns full file contents as a string, or "" if file doesn't exist
+    @abstractmethod
+    async def capture(self, content: str, group_id: str | None = None) -> None: ...
+    # group_id=None → global memory; set → group-scoped memory
 
-    def save(self, content: str) -> None: ...
-    # Overwrites the file
+    @abstractmethod
+    async def load_context(self) -> str: ...
+    # Returns a static context string (recent/summary facts, not search results)
 ```
 
-`MEMORY.md` is a markdown file the LLM reads and writes directly. Its contents are injected into the agent's system prompt on every turn. The LLM updates it using `FileWriteTool` with `path="MEMORY.md"`, which resolves to the group's memory file (not the workspace). The agent system prompt includes: `"You can update your persistent memory by writing to MEMORY.md. Use it to remember facts about users, ongoing projects, and preferences."`
+**`MarkdownMemory(MemoryBackend)`** — fallback when OB1 not configured:
+- Reads/writes `{groups_dir}/{group_id}/MEMORY.md`
+- `search()` returns full file contents (no semantic filtering)
+- `capture()` appends a line to the file
+- Injected into agent system prompt in full each turn
 
-`GroupMemory` is passed via constructor injection to `FileReadTool` and `FileWriteTool`. `FileReadTool` with `path="MEMORY.md"` also resolves to the group's memory file.
+**`OB1Memory(MemoryBackend)`** — used when `SUPABASE_URL` is present:
+- Wraps the napyclaw/OB1 Supabase HTTP API
+- `search()` generates an embedding for the query, calls `match_thoughts` with group-scoped + global (null `group_id`) results merged and re-ranked by similarity
+- `capture()` posts to `capture_thought` with `group_id` in metadata
+- Only semantically relevant thoughts are injected per turn — solves the context-window scaling problem of MEMORY.md
+
+**Backend selection:** `NapyClaw` checks `Config` at startup. `Agent` only ever holds a `MemoryBackend` reference and is unaware of which backend is active.
+
+**`SearchMemoryTool` / `CaptureMemoryTool`** added to the tool set — explicit tools the LLM can call to search or save memories beyond what is auto-retrieved. Both delegate to the group's `MemoryBackend`.
+
+**napyclaw/OB1 fork** (changes tracked in the OB1 repo):
+- `thoughts` table: `group_id UUID` column added (nullable — null = global)
+- `match_thoughts`: accepts optional `group_id`, returns union of group-scoped + global results ordered by similarity
+- `capture_thought`: accepts optional `group_id` in metadata
+- Users may point napyclaw at their own OB1 deployment via `SUPABASE_URL` — the fork is the recommended path but not required
+
+### OAuth Credential Management
+
+A lightweight `OAuthCallbackServer` (defined in `oauth.py`) starts alongside the Slack bot at boot. It listens on a configurable port (default 8765, stored in Infisical as `OAUTH_CALLBACK_PORT`) for OAuth redirect callbacks.
+
+```python
+class OAuthCallbackServer:
+    async def start(self, port: int) -> None: ...
+
+    async def get_authorization_url(self, provider: str, user_id: str) -> str: ...
+    # Generates OAuth URL; encodes provider + user_id in state parameter
+
+    async def handle_callback(self, code: str, state: str) -> None: ...
+    # Exchanges code → tokens → writes refresh_token directly to Infisical
+    # Key: OAUTH_{PROVIDER}_{USER_ID}_REFRESH_TOKEN
+    # e.g. OAUTH_GOOGLE_U0123ABC_REFRESH_TOKEN
+    # Token value never logged, never stored in process memory beyond the exchange
+```
+
+**Credential isolation — how keys stay out of the agent:**
+- OAuth tokens: `OAuthCallbackServer → Infisical` directly (not through any agent-accessible path)
+- At recipe execution: `Infisical → Config → RecipeTool constructor` — credentials held by the tool object, never returned by `execute()`
+- `FileReadTool` sandboxed to `workspace_dir` — cannot traverse to credential storage
+- Tool `execute()` returns only outcome strings (`"Imported 1,847 thoughts"`) — never token values
+- No tool exposes `Config` values or Infisical secrets to the LLM
+
+**OAuth flow (user perspective):**
+```
+User: "@General_napy connect my Google account"
+Bot:  "Click here to connect Google: https://accounts.google.com/o/oauth2/auth?..."
+User: [completes Google login in browser]
+Bot:  "Google connected. You can now say 'import my Google activity'."
+```
+
+**Per-user scoping:** Credentials are keyed by Slack `sender_id`. Each user who connects a service gets their own token. Recipe tools look up credentials by the `sender_id` of the requesting message.
+
+**Supported OAuth providers (v1 design — implementations in Phase 2):**
+- Google (Google Activity, Gmail, Drive)
+- Microsoft Entra ID (OneDrive, Outlook)
+
+**Static credentials** (no OAuth) use the same Infisical key pattern:
+`{PROVIDER}_{USER_ID}_KEY` — e.g. `CHATGPT_U0123ABC_EXPORT_PATH`
+
+### Recipe Tools (Phase 2)
+
+Recipe tools are `Tool` subclasses in `tools/recipes/`. Each wraps a napyclaw/OB1 import recipe as an agent-callable action. Phase 1 ships without recipe implementations — the `RecipeTool` base class and directory structure are in place, files are added per recipe in Phase 2.
+
+```python
+class RecipeTool(Tool, ABC):
+    async def get_credential(self, provider: str, sender_id: str) -> str | None:
+        # Reads from Config (loaded from Infisical at startup)
+        # Returns None if not found
+        ...
+
+    # If credential missing, execute() returns:
+    # "I don't have your {provider} credentials yet. Say 'connect {provider}' to set it up."
+```
+
+```
+tools/recipes/
+├── base.py             # RecipeTool base class
+├── chatgpt.py          # ImportChatGPTTool
+├── obsidian.py         # ImportObsidianTool
+├── google_activity.py  # ImportGoogleActivityTool
+└── ...                 # One file per OB1 recipe
+```
 
 ### Channel
 
@@ -409,7 +510,7 @@ _run_agent(context, msg)  ← runs inside GroupQueue lock
     │  4. channel.set_typing(msg.group_id, False)  ← always, via try/finally
     ▼
 Agent.run(msg.text)
-    │  1. Build system prompt (GroupMemory contents + context: names, current model)
+    │  1. Build system prompt (MemoryBackend contents + context: names, current model)
     │  2. Append user message to history
     │  3. Call LLMClient.chat(history, tools=tool_schemas)
     │  4. If tool_calls → execute tools → append results → loop (max 10 iterations)
@@ -432,7 +533,7 @@ For each due task:
     │  if GroupContext not found (group deleted) → pause task, skip
     │  if task.model/provider set:
     │      create a one-off Agent with a task-specific LLMClient
-    │      (same GroupMemory as the group, but fresh empty history)
+    │      (same MemoryBackend as the group, but fresh empty history)
     │  else:
     │      use context.agent directly (with its existing history)
     │  queue.run(task.group_id, _run_task(task, agent))
@@ -443,7 +544,7 @@ For each due task:
 Result sent to task.group_id via channel.send()
 ```
 
-**Note on task agents:** Using a one-off agent for model-override tasks avoids mutating `context.active_client`. The one-off agent shares the group's `GroupMemory` (reads persistent memory) but starts with no conversation history — the task `prompt` is its only user message. Context agent history is not modified by scheduled task runs.
+**Note on task agents:** Using a one-off agent for model-override tasks avoids mutating `context.active_client`. The one-off agent shares the group's `MemoryBackend` (reads persistent memory) but starts with no conversation history — the task `prompt` is its only user message. Context agent history is not modified by scheduled task runs.
 
 ---
 
@@ -502,6 +603,9 @@ Hard fail: `"Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and INFISICA
 
 - WhatsApp, Telegram, Discord channels (architecture supports them via Channel base class)
 - Container isolation
-- Multi-user auth/permissions beyond `owner_id`
+- Multi-user / team deployments (designed for single owner)
 - Web UI or dashboard
 - Message replay after Slack Socket Mode disconnect
+- Recipe tool implementations (Phase 2 — `RecipeTool` base class and `tools/recipes/` scaffolded in v1)
+- OAuth provider implementations (Phase 2 — `OAuthCallbackServer` and base class in v1, provider-specific flows added per recipe)
+- napyclaw/OB1 fork schema changes (tracked in the OB1 repo, not napyclaw)
