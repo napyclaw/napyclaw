@@ -30,6 +30,7 @@ napyclaw/
 ├── app.py               # NapyClaw class — orchestrator, wires everything together
 ├── config.py            # Config class — loads from Infisical Cloud, typed attributes
 ├── db.py                # Database class — aiosqlite, all persistence operations
+├── egress.py            # EgressGuard — outbound domain policy engine with LLM-as-judge
 ├── models/
 │   ├── base.py          # LLMClient abstract base class, ChatResponse dataclass
 │   ├── openai_client.py # OpenAIClient — cloud API (OpenAI, OpenRouter)
@@ -49,6 +50,8 @@ napyclaw/
 ├── memory.py            # MemoryBackend ABC, MarkdownMemory, VectorMemory, NullMemory
 ├── migrations/
 │   └── 001_thoughts.sql # PostgreSQL + pgvector schema (thoughts table + match_thoughts fn)
+├── data/
+│   └── majestic_top10k.txt  # Bundled Majestic 1M top 10k hostnames (auto-allow tier)
 ├── shield.py            # ContentShield — credential/PII detection before any storage
 ├── private_session.py   # PrivateSession — ephemeral DM session, no persistence
 └── oauth.py             # OAuthCallbackServer — lightweight HTTP listener for OAuth flows
@@ -157,6 +160,10 @@ class Config:
     workspace_dir: Path           # Where file tools read/write. Created if missing.
     db_path: Path                 # SQLite file path. Created if missing.
     groups_dir: Path              # Parent dir for per-group MEMORY.md files. Created if missing.
+
+    # Egress guard
+    egress_approvals_channel: str   # Slack channel ID for approval requests (e.g. "C0123ABC")
+                                    # Owner is notified here when an unknown domain needs approval.
 
     # Agent tuning (all optional — dynamic budget used when absent)
     max_history_tokens: int | None  # Hard override for history budget. None = use dynamic calculation.
@@ -339,7 +346,7 @@ Constructor injection per tool:
 - `SendMessageTool`: receives `Channel` and `GroupContext`
 - `ScheduleTaskTool`: receives `Database` and `GroupContext`
 - `RenameBot`, `AddNickname`, `ClearNicknames`, `SwitchModel`: receive `Database` and `GroupContext`
-- `WebSearchTool`: receives `Config` (for `brave_api_key`)
+- `WebSearchTool`: receives `Config` (for `brave_api_key`) and `EgressGuard` (for the guarded httpx client)
 
 **FileWriteTool path resolution:** If `path == "MEMORY.md"` (case-insensitive), the write target is `MemoryBackend.path` for the current group (not `workspace_dir`). All other paths are resolved relative to `workspace_dir` and must not escape it (path traversal check: reject any path containing `..`).
 
@@ -390,6 +397,141 @@ class MemoryBackend(ABC):
 - `match_thoughts(query_embedding, group_id, match_count)`: returns union of group-scoped + global results ordered by cosine similarity
 - Default local setup: Docker Compose with `ankane/pgvector` image (see `docker-compose.yml`)
 - Cloud Postgres with pgvector enabled (e.g. Supabase) works as a drop-in via the same `vector_db_url`
+
+### EgressGuard
+
+Defined in `egress.py`. A Python-native outbound domain policy engine — the "xfill listener". Every outbound HTTP request made by napyclaw passes through `EgressGuard` before it leaves the process. The guard sees only the destination **hostname** (SNI equivalent), never payload, headers, or body.
+
+**Why domain-only:** The LLM reviewer never sees API keys, prompt content, or PII — no exfiltration risk from the reviewer itself. Hostname is available before any bytes are sent. Domain-level audit logs are legally cleaner to store long-term.
+
+#### Integration: guarded httpx client
+
+`EgressGuard` exposes a factory that wraps `httpx.AsyncClient` with a request hook:
+
+```python
+class EgressGuard:
+    def build_client(self, **kwargs) -> httpx.AsyncClient:
+        client = httpx.AsyncClient(**kwargs)
+        client.event_hooks["request"] = [self._check_request]
+        return client
+
+    async def _check_request(self, request: httpx.Request) -> None:
+        hostname = request.url.host
+        allowed = await self.check(hostname)
+        if not allowed:
+            raise EgressDeniedError(f"Egress denied: {hostname}")
+```
+
+All components that make outbound HTTP calls receive a guarded client from `NapyClaw`:
+- `WebSearchTool` — receives `EgressGuard` and calls `guard.build_client()` for Brave API requests
+- `OpenAIClient` — passes `guard.build_client()` as the `http_client` arg to the OpenAI SDK
+- `OllamaClient` — uses `guard.build_client()` for all Ollama API calls
+
+The LLM judge inside `EgressGuard` uses a **raw** (unguarded) internal httpx client to call the configured LLM, avoiding recursive egress checks. The LLM endpoints themselves are added to the auto-allow list at startup.
+
+#### Trust tiers
+
+```
+Inbound hostname
+    │
+    ▼
+1. auto_deny  — threat intel (abuse.ch URLhaus): deny immediately, log
+    │ no match
+    ▼
+2. auto_allow — Majestic 1M top 10k (bundled) + internal list + configured LLM endpoints: allow immediately, log
+    │ no match
+    ▼
+3. verdict cache (SQLite egress_verdicts table): use cached verdict if not expired
+    │ cache miss
+    ▼
+4. LLM judge → verdict: "allow" | "deny" | "escalate"
+    │
+    ├── "allow" / "deny" → cache with TTL, log, return
+    └── "escalate"       → Slack approval flow (60s timeout → deny)
+```
+
+**Internal always-allow list** (hardcoded, not in Infisical):
+- `slack.com`, `*.slack.com`, `wss-primary.slack.com` — Slack Socket Mode
+- `infisical.com`, `app.infisical.com` — Infisical secret fetching at startup
+
+**Configured LLM endpoints** — added to auto_allow at startup from `Config`:
+- hostname of `config.openai_base_url`
+- hostname of `config.ollama_base_url`
+
+**Threat intel** — `abuse.ch` URLhaus host blocklist, fetched at startup via HTTP and held in memory as a `set[str]`. Refreshed every 15 minutes via the Scheduler (a recurring `ScheduledTask` added automatically at startup, not user-visible).
+
+**Majestic top 10k** — bundled at `napyclaw/data/majestic_top10k.txt`, one hostname per line. Loaded into a `set[str]` at startup. Updated by the maintainer when the package is released.
+
+#### LLM judge
+
+Uses the group's configured `LLMClient` with a dedicated system prompt. Receives hostname metadata only — never payload.
+
+```python
+EGRESS_SYSTEM = """
+You are a network egress policy reviewer for an AI agent.
+You see ONLY the destination hostname and metadata — never payload or content.
+Classify the request and respond in JSON only:
+{
+  "verdict": "allow|deny|escalate",
+  "confidence": 0.0-1.0,
+  "reason": "one sentence",
+  "ttl_seconds": 3600
+}
+Escalate when: new/unranked domain, suspicious TLD, domain age < 30 days,
+or unusual for this agent's normal traffic pattern.
+"""
+```
+
+Prompt variables passed to the judge: `hostname`, `timestamp`, `request_count_last_hour`, `threat_intel_hit` (bool), `majestic_rank` (int or null), `domain_age_days` (int, from WHOIS via `python-whois`), `tld`.
+
+#### Slack approval flow
+
+When the LLM judge returns `"escalate"`, the guard posts to `config.egress_approvals_channel` and waits up to 60 seconds for a button click response via Slack's interactive components API.
+
+```
+┌─────────────────────────────────────────────┐
+│  Egress approval needed                     │
+│  Domain: cdn.somelib.io                     │
+│  Age: 47 days   Rank: #284,921              │
+│  Reason: "CDN subdomain, plausible but      │
+│           unranked — verify intent"         │
+│                                             │
+│  [Allow once]  [Allow + cache 24h]  [Deny]  │
+└─────────────────────────────────────────────┘
+  Timeout 60s → auto-deny, request gets EgressDeniedError
+```
+
+Button responses:
+- **Allow once** — allows this request; verdict not cached (next request re-evaluates)
+- **Allow + cache 24h** — caches `allow` verdict for 86400 seconds
+- **Deny** — caches `deny` verdict for 300 seconds
+
+#### EgressGuard dataclasses
+
+```python
+@dataclass
+class EgressVerdict:
+    hostname: str
+    verdict: str          # "allow" | "deny"
+    confidence: float
+    reason: str
+    source: str           # "auto_allow" | "auto_deny" | "llm" | "human_approved" | "timeout_deny"
+    cached_until: str     # ISO-8601 UTC; empty string = not cached
+
+class EgressDeniedError(Exception):
+    pass
+```
+
+#### What EgressGuard covers vs. does not cover
+
+| Threat | Covered? |
+|---|---|
+| Agent calling known-bad C2 domain | ✅ abuse.ch auto-deny |
+| Agent calling novel exfil domain | ✅ LLM flags new/unranked domain |
+| Connection to approved domain going malicious | ⚠️ TTL expiry triggers re-review |
+| Slow exfil to legitimate CDN | ⚠️ Domain looks clean; payload-blind by design |
+| Raw IP connections (no hostname) | ❌ Out of scope for v1 |
+| Exfil via already-approved domain | ❌ Domain-only; payload inspection not in scope |
 
 ### OAuth Credential Management
 
@@ -645,10 +787,12 @@ class NapyClaw:
     async def start(self) -> None:
         # 1. Init DB (create file and schema if missing)
         # 2. Create workspace_dir and groups_dir if missing
-        # 3. Load all GroupContexts from DB, reconstruct Agents with stored history
-        # 4. Connect channels, register handle_message as handler
-        # 5. Start Scheduler
-        # 6. Run forever (asyncio event loop)
+        # 3. Init EgressGuard — load Majestic top 10k, fetch abuse.ch URLhaus threat intel,
+        #    add configured LLM endpoints to auto_allow
+        # 4. Load all GroupContexts from DB, reconstruct Agents with stored history
+        # 5. Connect channels, register handle_message as handler
+        # 6. Start Scheduler (registers threat intel refresh task automatically)
+        # 7. Run forever (asyncio event loop)
 
     async def handle_message(self, msg: Message) -> None:
         # 1. Store message in DB
@@ -765,6 +909,13 @@ Hard fail: `"Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and INFISICA
 - `slack-bolt` handles reconnection automatically
 - Messages received during disconnect are not replayed (Socket Mode limitation); bot resumes normally after reconnect
 
+### EgressGuard failures
+- **abuse.ch fetch fails at startup** — EgressGuard logs a warning and starts with an empty threat intel list. Auto-allow and LLM-judge tiers still function. The Scheduler's 15-minute refresh will retry.
+- **LLM judge unavailable** (Ollama down, OpenAI error) — verdict defaults to `"escalate"`, triggering the Slack approval flow. This ensures unknown domains are never silently allowed when the judge can't run.
+- **Slack approval channel unreachable** — if posting the approval message fails, the request is auto-denied and the error is logged. Never silently allow on failure.
+- **WHOIS lookup times out** — `domain_age_days` is passed as `null` to the LLM judge. The judge is instructed to treat unknown domain age as a risk signal.
+- **`EgressDeniedError` in tool** — `Tool.execute()` catches `EgressDeniedError` and returns: `"Request blocked: egress to {hostname} was denied by policy."` The LLM receives this as a tool result and reports it to the user.
+
 ### ContentShield failures
 - If detect-secrets or Presidio raise an exception, `ContentShield.scan()` returns the original text flagged as `has_blocked=False` and logs the error — scanning failures never block message delivery. A warning is logged so the operator knows the shield is degraded.
 
@@ -790,6 +941,8 @@ Hard fail: `"Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and INFISICA
 | `scheduled_tasks` | `id`, `group_id`, `owner_id`, `prompt`, `schedule_type`, `schedule_value`, `model`, `provider`, `status`, `next_run`, `retry_count`, `created_at` | |
 | `task_run_log` | `id`, `task_id`, `ran_at`, `status`, `result_snippet`, `duration_ms` | |
 | `shield_log` | `id`, `group_id`, `sender_id`, `detection_types` (JSON), `timestamp` | Audit log of ContentShield detections. Never stores the original text or redacted content — only detection metadata. |
+| `egress_verdicts` | `hostname` (PK), `verdict`, `confidence`, `reason`, `cached_until` | Verdict cache. Rows with `cached_until` in the past are ignored and overwritten on next evaluation. |
+| `egress_log` | `id`, `hostname`, `verdict`, `reason`, `source`, `timestamp` | Append-only audit log of every egress decision. |
 
 Private sessions are **not persisted** — intentionally in-memory only.
 
@@ -803,6 +956,10 @@ Private sessions are **not persisted** — intentionally in-memory only.
 - Unit tests for `RenameBot`/`SwitchModel` permission enforcement
 - Unit tests for `ContentShield` — known credential strings trigger redaction; phone/email pass through unmodified
 - Unit tests for `PrivateSession` — assert no DB writes occur, assert in-memory state wiped on end
+- Unit tests for `EgressGuard` trust tiers — auto_deny hits return False immediately; auto_allow hits return True immediately; unknown domain reaches LLM judge (mock judge)
+- Unit tests for `EgressGuard` Slack approval flow — mock Slack; assert timeout → deny; assert allow button → True; assert deny button → False
+- Unit tests for `EgressGuard` failure modes — LLM unavailable escalates to Slack; Slack post failure auto-denies
+- Unit tests for guarded httpx client — assert `EgressDeniedError` raised when check() returns False
 - Integration smoke test: real Slack → real Ollama round trip (manual, not CI)
 
 ---
