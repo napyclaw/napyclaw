@@ -164,6 +164,11 @@ class Config:
     # Egress guard
     egress_approvals_channel: str   # Slack channel ID for approval requests (e.g. "C0123ABC")
                                     # Owner is notified here when an unknown domain needs approval.
+    egress_judge_model: str | None  # Model for the LLM judge. None = use group's active_client.
+                                    # A small, fast model is ideal — domain classification is a
+                                    # simple structured-output task. e.g. "qwen2.5:1.5b" on Ollama.
+    egress_judge_provider: str | None  # "ollama" | "openai". None = use group's active provider.
+                                       # Set alongside egress_judge_model if using a different provider.
 
     # Agent tuning (all optional — dynamic budget used when absent)
     max_history_tokens: int | None  # Hard override for history budget. None = use dynamic calculation.
@@ -464,7 +469,23 @@ Inbound hostname
 
 #### LLM judge
 
-Uses the group's configured `LLMClient` with a dedicated system prompt. Receives hostname metadata only — never payload.
+The judge is a **stateless, isolated `chat()` call** — it reuses the configured `LLMClient` instance (same model and endpoint) but calls `client.chat()` directly with a two-message list. No conversation history, no tools, no memory injection. Each evaluation is an independent classification call that does not affect the agent's context window.
+
+```python
+response = await judge_client.chat([
+    {"role": "system", "content": EGRESS_SYSTEM},
+    {"role": "user",   "content": hostname_metadata_prompt},
+])
+# response.text is parsed as JSON → EgressVerdict
+```
+
+**Judge client selection:** At startup, `NapyClaw` constructs a dedicated `judge_client: LLMClient` for `EgressGuard`:
+- If `config.egress_judge_model` is set: construct a new `OllamaClient` or `OpenAIClient` using `egress_judge_model` + `egress_judge_provider`
+- If not set: use the instance's `default_model` + `default_provider`
+
+This separation matters: the main agent may be running a large reasoning model while the judge runs a small, fast classification model in parallel without contention.
+
+**Model sizing note:** Domain classification is a simple structured-output task (JSON with 4 fields). A 1–2B parameter model is likely sufficient and preferable — lower latency means less request blocking. `qwen2.5:1.5b` or `smollm2:1.7b` on Ollama are reasonable starting points, though no benchmarking has been done yet. The right model should be validated empirically once the feature is built.
 
 ```python
 EGRESS_SYSTEM = """
