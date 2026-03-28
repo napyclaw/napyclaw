@@ -111,6 +111,8 @@ This table compares napyclaw against its predecessors and related projects acros
 | Exposed network port | ❌ 0.0.0.0 default | ✅ No listener | ✅ OpenShell netns isolation | ✅ No listener. Slack Socket Mode is outbound-only. OAuth callback server is opt-in and local. |
 | Audit trail | ❌ None | ❌ None | ✅ Built-in policy enforcement + audit logging | ✅ shield_log (credential/PII detections), egress_verdicts (domain decisions), egress_log (every outbound check), all messages stored with redaction metadata. |
 | Data → cloud leakage | ❌ No controls | ⚠️ Depends on config | ✅ Privacy router keeps internal data local | ✅ EgressGuard on all outbound HTTP. Can run fully local (Ollama + local Postgres). Cloud LLM is opt-in, not default. |
+| Data locality | ❌ Cloud-dependent | ⚠️ Local inference, but no structured local storage | ⚠️ Local inference + sandbox, but NVIDIA stack phones home for licensing | ✅ Full local stack available: Ollama for inference, PostgreSQL + pgvector for memory, SQLite for state. Nothing leaves your network unless you opt in. |
+| Vendor lock-in | ❌ Tied to OpenAI | ⚠️ Ollama only | ❌ Tied to NVIDIA NIM | ✅ No lock-in. LLMClient ABC abstracts providers — swap Ollama, OpenAI, or OpenRouter per channel at runtime. Scheduler and memory run locally, not on a provider's platform. OpenBrain-style architecture means your knowledge persists independent of any model. |
 
 ### What napyclaw does well
 
@@ -120,15 +122,19 @@ This table compares napyclaw against its predecessors and related projects acros
 
 **Auditability.** The codebase is small enough to read in an afternoon. There are no plugin systems, no dynamic code loading, no eval. Every tool is a Python class with an `execute()` method that returns a string.
 
-**Data locality.** Default configuration keeps everything on your machines — Ollama for inference, local PostgreSQL for memory, SQLite for state. Cloud LLM providers are available but opt-in, and all outbound calls pass through EgressGuard.
+**Data locality.** Default configuration keeps everything on your machines — Ollama for inference, local PostgreSQL for memory, SQLite for state. Cloud LLM providers are available but opt-in, and all outbound calls pass through EgressGuard. Your data never has to leave your network.
 
-### What remains vulnerable
+**No vendor lock-in.** Most agent frameworks are tightly coupled to a single model provider — your conversation history, memory, and scheduled tasks live on that provider's platform. napyclaw keeps all of that locally. The LLMClient ABC means you can swap between Ollama, OpenAI, and OpenRouter per channel at runtime. The scheduler runs against your local database, not a provider's API. The OpenBrain-inspired memory architecture (pgvector + embeddings) means your knowledge base persists and remains searchable regardless of which model you're using today. If a provider raises prices, changes terms, or disappears, you switch models — not platforms.
 
-**Prompt injection** is unsolved at every layer of this architecture. A well-crafted message can convince the agent to misuse its tools within the permissions it already has. EgressGuard and owner-only tool gates limit the blast radius, but a prompt-injected agent can still search the web, write files to the workspace, and send messages to channels it has access to.
+### What we're working on
 
-**No process isolation.** Unlike NanoClaw (Docker) or NemoClaw (Landlock + seccomp), napyclaw runs as a regular Python process. If the process is compromised, the attacker has access to everything the process can see — including the Config object holding all secrets in memory. This is an acceptable tradeoff for a personal tool running on your own tailnet; it would not be acceptable in a shared or multi-tenant environment.
+These are known vulnerabilities with active mitigation plans. See the linked issues for details and progress.
 
-**Secrets in memory.** Infisical keeps secrets out of files, but `Config.from_infisical()` loads them all into a Python dataclass at startup. A memory dump of the napyclaw process would expose every API key. This is inherent to any application that needs to use secrets at runtime.
+**Prompt injection** ([#2](https://github.com/napyclaw/napyclaw/issues/2)) is unsolved at every layer of this architecture. A well-crafted message can convince the agent to misuse its tools within the permissions it already has. EgressGuard and owner-only tool gates limit the blast radius, but a prompt-injected agent can still search the web, write files to the workspace, and send messages to channels it has access to. Planned mitigations: tool permission tiers, input/output tagging, and a Slack-based confirmation flow for destructive actions.
+
+**No process isolation** ([#3](https://github.com/napyclaw/napyclaw/issues/3)). Unlike NanoClaw (Docker) or NemoClaw (Landlock + seccomp), napyclaw runs as a regular Python process. If the process is compromised, the attacker has access to everything the process can see — including the Config object holding all secrets in memory. This is an acceptable tradeoff for a personal tool running on your own tailnet; it would not be acceptable in a shared or multi-tenant environment. First step: Dockerfile with non-root user and read-only filesystem.
+
+**Secrets in memory** ([#4](https://github.com/napyclaw/napyclaw/issues/4)). Infisical keeps secrets out of files, but `Config.from_infisical()` loads them all into a Python dataclass at startup. A memory dump of the napyclaw process would expose every API key. This is inherent to any application that needs to use secrets at runtime. Planned mitigations: on-demand secret fetch with mlock to prevent swap-file leakage, and eventually a delegated auth proxy so napyclaw never holds API keys directly.
 
 ### Who this is for
 
