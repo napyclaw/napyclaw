@@ -10,8 +10,10 @@ from napyclaw.channels.base import Channel, Message
 from napyclaw.config import Config
 from napyclaw.db import Database
 from napyclaw.injection_guard import InjectionGuard
+from napyclaw.memory import MemoryBackend
 from napyclaw.models.base import LLMClient
 from napyclaw.models.openai_client import LLMUnavailableError
+from napyclaw.shield import ContentShield
 from napyclaw.tools.base import Tool
 
 
@@ -50,6 +52,8 @@ class NapyClaw:
         build_client: Any = None,
         build_system_prompt: Any = None,
         injection_guard: InjectionGuard | None = None,
+        shield: ContentShield | None = None,
+        memory: MemoryBackend | None = None,
     ) -> None:
         self.config = config
         self.db = db
@@ -58,6 +62,8 @@ class NapyClaw:
         self.contexts: dict[str, GroupContext] = {}
         self.bot_user_id: str = ""
         self._injection_guard = injection_guard
+        self._shield = shield
+        self._memory = memory
 
         # Pluggable factories — set by start() or injected for testing
         self._build_tools = build_tools or (lambda ctx: [])
@@ -123,14 +129,31 @@ class NapyClaw:
 
     async def handle_message(self, msg: Message) -> None:
         """Handle an incoming message from any channel."""
-        # Store message in DB
         import uuid
+        from datetime import datetime, timezone
+
+        # Scan and redact before any storage or processing
+        if self._shield:
+            shield_result = self._shield.scan(msg.text)
+            clean_text = shield_result.clean_text
+            if shield_result.has_blocked:
+                await self.db.log_shield_detection(
+                    id=str(uuid.uuid4()),
+                    group_id=msg.group_id,
+                    sender_id=msg.sender_id,
+                    detection_types=[d.type for d in shield_result.detections if d.redacted],
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                )
+        else:
+            clean_text = msg.text
+
+        # Store redacted text
         await self.db.save_message(
             id=str(uuid.uuid4()),
             group_id=msg.group_id,
             sender_id=msg.sender_id,
             sender_name=msg.sender_name,
-            text=msg.text,
+            text=clean_text,
             timestamp=msg.timestamp,
             channel_type=msg.channel_type,
         )
@@ -180,13 +203,23 @@ class NapyClaw:
                 return
 
         # Run agent through the group queue
-        await self.queue.run(msg.group_id, self._run_agent(ctx, msg))
+        await self.queue.run(msg.group_id, self._run_agent(ctx, msg, clean_text))
 
-    async def _run_agent(self, context: GroupContext, msg: Message) -> None:
+    async def _run_agent(self, context: GroupContext, msg: Message, text: str) -> None:
         """Execute agent and send response. Runs inside GroupQueue lock."""
+        # Inject relevant memories into system prompt for this turn
+        if self._memory:
+            memories = await self._memory.search(text, context.group_id)
+            base_prompt = self._build_system_prompt(context)
+            if memories:
+                memory_block = "\n\n## Relevant memories\n" + "\n".join(f"- {m}" for m in memories)
+                context.agent.system_prompt = base_prompt + memory_block
+            else:
+                context.agent.system_prompt = base_prompt
+
         try:
             await self.channel.set_typing(msg.group_id, True)
-            response = await context.agent.run(msg.text, sender_id=msg.sender_id)
+            response = await context.agent.run(text, sender_id=msg.sender_id)
             await self.channel.send(msg.group_id, response)
         except AgentLoopError:
             await self.channel.send(
@@ -197,6 +230,13 @@ class NapyClaw:
             await self.channel.send(msg.group_id, str(e))
         finally:
             await self.channel.set_typing(msg.group_id, False)
+
+        # Capture exchange to memory
+        if self._memory and response:
+            await self._memory.capture(
+                f"User: {text}\nAssistant: {response}",
+                group_id=context.group_id,
+            )
 
         # Persist context after each turn
         if context.is_first_interaction:

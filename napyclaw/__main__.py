@@ -116,6 +116,8 @@ async def main() -> None:
         build_client=build_client,
         build_system_prompt=build_system_prompt,
         injection_guard=injection_guard,
+        shield=shield,
+        memory=memory,
     )
 
     # Fetch Ollama context window if that's the default provider
