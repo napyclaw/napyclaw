@@ -1,20 +1,40 @@
-import pytest
+"""Integration tests for Database — require Postgres via docker-compose.
+
+Run `docker compose up -d` before running these tests.
+Set TEST_DB_URL to override the default connection string.
+"""
+import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+
+import pytest
 
 from napyclaw.db import Database, ScheduledTask
 
+TEST_DB_URL = os.environ.get(
+    "TEST_DB_URL",
+    "postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw",
+)
+
+_TRUNCATE = """
+TRUNCATE messages, group_contexts, scheduled_tasks, task_run_log, shield_log
+"""
+
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "test.db")
-    await database.init()
-    return database
+async def db():
+    try:
+        database = Database(TEST_DB_URL)
+        await database.connect()
+    except Exception as exc:
+        pytest.skip(f"Postgres not available: {exc}")
+    await database.pool.execute(_TRUNCATE)
+    yield database
+    await database.pool.execute(_TRUNCATE)
+    await database.close()
 
 
-async def test_init_creates_tables(db: Database):
-    # If init() ran without error and we can query, schema is correct
+async def test_connect_and_query(db: Database):
     tasks = await db.list_scheduled_tasks("group-1")
     assert tasks == []
 
@@ -40,8 +60,7 @@ async def test_save_and_load_group_context(db: Database):
 
 
 async def test_load_group_context_missing_returns_none(db: Database):
-    result = await db.load_group_context("nonexistent")
-    assert result is None
+    assert await db.load_group_context("nonexistent") is None
 
 
 async def test_update_group_context(db: Database):
@@ -163,7 +182,6 @@ async def test_update_task_status(db: Database):
 
 
 async def test_save_message(db: Database):
-    # No exception = pass; messages table is write-only in v1
     await db.save_message(
         id="msg1",
         group_id="C001",
@@ -176,7 +194,6 @@ async def test_save_message(db: Database):
 
 
 async def test_log_shield_detection(db: Database):
-    # No exception = pass; shield_log is append-only
     await db.log_shield_detection(
         id="shield1",
         group_id="C001",

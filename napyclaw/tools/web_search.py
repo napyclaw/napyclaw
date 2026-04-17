@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 class WebSearchTool(Tool):
     name = "web_search"
     description = "Search the web using Brave Search. Returns top 5 results with title, URL, and snippet."
+    injection_source = "web_search"
     parameters = {
         "type": "object",
         "properties": {

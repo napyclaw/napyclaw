@@ -69,31 +69,25 @@ class MarkdownMemory(MemoryBackend):
 
 
 class VectorMemory(MemoryBackend):
-    """PostgreSQL + pgvector backend with Ollama embeddings."""
+    """PostgreSQL + pgvector backend with Ollama embeddings.
+
+    Accepts an existing asyncpg.Pool (from Database) — does not manage
+    its own connection lifecycle.
+    """
 
     def __init__(
         self,
-        db_url: str,
+        pool: asyncpg.Pool | None,
         embed_model: str,
         ollama_base_url: str,
     ) -> None:
-        self._db_url = db_url
+        self._pool = pool
         self._embed_model = embed_model
         # Strip /v1 for native Ollama API
         base = ollama_base_url.rstrip("/")
         if base.endswith("/v1"):
             base = base[:-3]
         self._ollama_base = base
-        self._pool: asyncpg.Pool | None = None
-
-    async def connect(self) -> None:
-        import asyncpg
-
-        self._pool = await asyncpg.create_pool(self._db_url, min_size=1, max_size=5)
-
-    async def close(self) -> None:
-        if self._pool:
-            await self._pool.close()
 
     async def _embed(self, text: str) -> list[float]:
         """Generate embedding via Ollama /api/embeddings endpoint."""

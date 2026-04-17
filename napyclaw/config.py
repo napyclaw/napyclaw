@@ -42,8 +42,8 @@ class Config:
     # Web search
     brave_api_key: str
 
-    # Vector memory (optional)
-    vector_db_url: str | None
+    # Database
+    db_url: str
     vector_embed_model: str
 
     # OAuth
@@ -51,7 +51,6 @@ class Config:
 
     # Paths
     workspace_dir: Path
-    db_path: Path
     groups_dir: Path
 
     # Agent tuning (optional)
@@ -131,11 +130,10 @@ class Config:
             slack_bot_token=require("SLACK_BOT_TOKEN"),
             slack_app_token=require("SLACK_APP_TOKEN"),
             brave_api_key=require("BRAVE_API_KEY"),
-            vector_db_url=optional("VECTOR_DB_URL"),
+            db_url=require("DB_URL"),
             vector_embed_model=require("VECTOR_EMBED_MODEL"),
             oauth_callback_port=int(require("OAUTH_CALLBACK_PORT")),
             workspace_dir=Path(require("WORKSPACE_DIR")),
-            db_path=Path(require("DB_PATH")),
             groups_dir=Path(require("GROUPS_DIR")),
             max_history_tokens=int(max_history_raw) if max_history_raw else None,
         )

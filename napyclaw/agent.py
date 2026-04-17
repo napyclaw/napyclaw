@@ -8,6 +8,7 @@ from napyclaw.tools.base import Tool
 
 if TYPE_CHECKING:
     from napyclaw.config import Config
+    from napyclaw.injection_guard import InjectionGuard
 
 
 class AgentLoopError(Exception):
@@ -23,6 +24,7 @@ class Agent:
         config: Config | None = None,
         max_tool_iterations: int = 10,
         history: list[dict] | None = None,
+        injection_guard: InjectionGuard | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -30,6 +32,7 @@ class Agent:
         self.config = config
         self.max_tool_iterations = max_tool_iterations
         self.history: list[dict] = history or []
+        self._injection_guard = injection_guard
 
     @property
     def tool_schemas(self) -> list[dict]:
@@ -87,6 +90,11 @@ class Agent:
 
     async def run(self, user_message: str, sender_id: str = "") -> str:
         """Run the agent with a user message. Returns the final text response."""
+        if self._injection_guard:
+            verdicts = await self._injection_guard.review(user_message, "user_input", self.client)
+            if any(v.risk == "malicious" for v in verdicts):
+                return "[Message blocked: potential injection attempt detected]"
+
         self.history.append({"role": "user", "content": user_message})
         self._prune_history()
 
@@ -131,6 +139,13 @@ class Agent:
                         result = f"Error: unknown tool '{tc.name}'"
                     else:
                         result = await tool.execute(sender_id=sender_id, **tc.arguments)
+                        if self._injection_guard:
+                            source = getattr(tool, "injection_source", "unknown")
+                            verdicts = await self._injection_guard.review(result, source, self.client)
+                            if any(v.risk == "malicious" for v in verdicts):
+                                result = f"[Tool result blocked: injection attempt detected from {tc.name}]"
+                            elif any(v.risk == "suspicious" for v in verdicts):
+                                result = f"[Warning: suspicious content in result]\n{result}"
 
                     tool_msg = {
                         "role": "tool",

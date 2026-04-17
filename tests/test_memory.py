@@ -74,7 +74,7 @@ class TestMarkdownMemory:
 class TestVectorMemory:
     def test_strips_v1_from_ollama_url(self):
         mem = VectorMemory(
-            db_url="postgresql://localhost:5432/napyclaw",
+            pool=None,
             embed_model="nomic-embed-text",
             ollama_base_url="http://100.1.2.3:11434/v1",
         )
@@ -82,7 +82,7 @@ class TestVectorMemory:
 
     async def test_search_without_connect_returns_empty(self):
         mem = VectorMemory(
-            db_url="postgresql://localhost:5432/napyclaw",
+            pool=None,
             embed_model="nomic-embed-text",
             ollama_base_url="http://100.1.2.3:11434/v1",
         )
@@ -90,7 +90,7 @@ class TestVectorMemory:
 
     async def test_capture_without_connect_does_nothing(self):
         mem = VectorMemory(
-            db_url="postgresql://localhost:5432/napyclaw",
+            pool=None,
             embed_model="nomic-embed-text",
             ollama_base_url="http://100.1.2.3:11434/v1",
         )
@@ -98,7 +98,7 @@ class TestVectorMemory:
 
     async def test_load_context_returns_empty(self):
         mem = VectorMemory(
-            db_url="postgresql://localhost:5432/napyclaw",
+            pool=None,
             embed_model="nomic-embed-text",
             ollama_base_url="http://100.1.2.3:11434/v1",
         )
@@ -108,7 +108,7 @@ class TestVectorMemory:
         import httpx as httpx_mod
 
         mem = VectorMemory(
-            db_url="postgresql://localhost:5432/napyclaw",
+            pool=None,
             embed_model="nomic-embed-text",
             ollama_base_url="http://100.1.2.3:11434/v1",
         )

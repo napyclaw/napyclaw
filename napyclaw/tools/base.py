@@ -5,6 +5,7 @@ class Tool(ABC):
     name: str
     description: str
     parameters: dict
+    injection_source: str = "internal"  # maps to InjectionGuard RISK_MAP
 
     @abstractmethod
     async def execute(self, **kwargs) -> str:

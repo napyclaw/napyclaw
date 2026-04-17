@@ -9,6 +9,7 @@ from napyclaw.agent import Agent, AgentLoopError
 from napyclaw.channels.base import Channel, Message
 from napyclaw.config import Config
 from napyclaw.db import Database
+from napyclaw.injection_guard import InjectionGuard
 from napyclaw.models.base import LLMClient
 from napyclaw.models.openai_client import LLMUnavailableError
 from napyclaw.tools.base import Tool
@@ -48,6 +49,7 @@ class NapyClaw:
         build_tools: Any = None,
         build_client: Any = None,
         build_system_prompt: Any = None,
+        injection_guard: InjectionGuard | None = None,
     ) -> None:
         self.config = config
         self.db = db
@@ -55,6 +57,7 @@ class NapyClaw:
         self.queue = GroupQueue()
         self.contexts: dict[str, GroupContext] = {}
         self.bot_user_id: str = ""
+        self._injection_guard = injection_guard
 
         # Pluggable factories — set by start() or injected for testing
         self._build_tools = build_tools or (lambda ctx: [])
@@ -63,7 +66,6 @@ class NapyClaw:
 
     async def start(self) -> None:
         """Initialize and run napyclaw."""
-        await self.db.init()
         self.config.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.config.groups_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,6 +87,7 @@ class NapyClaw:
                     system_prompt="",
                     config=self.config,
                     history=row["history"],
+                    injection_guard=self._injection_guard,
                 ),
             )
             ctx.agent.tools = self._build_tools(ctx)
@@ -165,6 +168,7 @@ class NapyClaw:
                     tools=[],
                     system_prompt="",
                     config=self.config,
+                    injection_guard=self._injection_guard,
                 ),
             )
             ctx.agent.tools = self._build_tools(ctx)

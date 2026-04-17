@@ -30,11 +30,10 @@ FULL_SECRETS = {
     "SLACK_BOT_TOKEN": "xoxb-test",
     "SLACK_APP_TOKEN": "xapp-test",
     "BRAVE_API_KEY": "brave-test",
-    "VECTOR_DB_URL": "postgresql://localhost:5432/napyclaw",
+    "DB_URL": "postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw",
     "VECTOR_EMBED_MODEL": "nomic-embed-text",
     "OAUTH_CALLBACK_PORT": "8765",
     "WORKSPACE_DIR": "/tmp/napyclaw/workspace",
-    "DB_PATH": "/tmp/napyclaw/napyclaw.db",
     "GROUPS_DIR": "/tmp/napyclaw/groups",
 }
 
@@ -55,19 +54,8 @@ def test_config_loads_all_fields():
     assert config.default_provider == "ollama"
     assert config.oauth_callback_port == 8765
     assert isinstance(config.workspace_dir, Path)
-    assert config.vector_db_url == "postgresql://localhost:5432/napyclaw"
+    assert config.db_url == "postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw"
     assert config.max_history_tokens is None
-
-
-def test_config_vector_db_url_optional():
-    secrets = {**FULL_SECRETS}
-    del secrets["VECTOR_DB_URL"]
-    mock_client = _make_infisical_client(secrets)
-    with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
-         patch.dict("os.environ", BOOTSTRAP_ENV):
-        config = Config.from_infisical()
-
-    assert config.vector_db_url is None
 
 
 def test_config_max_history_tokens_optional():
