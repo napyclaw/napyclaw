@@ -14,6 +14,7 @@ Inspired by [nanoclaw](https://github.com/NateBJones-Projects/nanoclaw) and [OB1
 - **ContentShield** — scans all content before storage for credentials (detect-secrets) and PII (Presidio). Redacts secrets and SSNs; allows phone/email through.
 - **Private sessions** — ephemeral DM conversations with no persistence. Nothing stored, nothing remembered.
 - **Scheduled tasks** — cron, interval, or one-shot prompts with retry and exponential backoff.
+- **InjectionGuard** — token-shuffle content inspector with rotating verification keys. Shuffles and bags input before sending to a reviewer LLM, defeating injection sequences while preserving detectable vocabulary. Blocks malicious content, warns on suspicious content. Applied to user input (HIGH) and tool results (source-tagged: web search = MEDIUM, internal tools = skipped).
 - **Secrets via Infisical** — all config loaded from Infisical Cloud at startup. No `.env` files.
 
 ## Architecture
@@ -29,7 +30,8 @@ SlackChannel --- normalizes to Message dataclass
     v
 NapyClaw.handle_message()
     |-- ContentShield.scan() --- redacts secrets/PII before storage
-    |-- Store message in SQLite
+    |-- InjectionGuard.review() --- token-shuffle inspection (user_input = HIGH)
+    |-- Store message in PostgreSQL
     |-- Check trigger (@name, @nickname, or Slack mention)
     |-- Get or create GroupContext for this channel
     |-- GroupQueue.run() --- one agent per channel at a time
@@ -38,7 +40,7 @@ NapyClaw.handle_message()
     Agent.run()
          |-- Build system prompt (memory + context)
          |-- LLMClient.chat() --- OpenAI or Ollama
-         |-- If tool calls: execute tools, loop (max 10)
+         |-- If tool calls: execute tools, InjectionGuard.review() on results, loop (max 10)
          |-- Return final text
          |
          v
@@ -53,8 +55,9 @@ napyclaw/
   app.py               NapyClaw orchestrator, GroupContext, GroupQueue
   agent.py             Agent — conversation loop, tool execution, history management
   config.py            Config from Infisical Cloud
-  db.py                SQLite persistence (aiosqlite, WAL mode)
+  db.py                PostgreSQL persistence (asyncpg)
   memory.py            MemoryBackend: VectorMemory (pgvector), MarkdownMemory, NullMemory
+  injection_guard.py   InjectionGuard — token-shuffle content inspector with rotating verification keys
   scheduler.py         Polls DB for due tasks, fires through agents
   shield.py            ContentShield — credential/PII scanning
   egress.py            EgressGuard — outbound domain policy with LLM judge
@@ -105,13 +108,13 @@ This table compares napyclaw against its predecessors and related projects acros
 | Host RCE | ❌ Critical | ✅ Ephemeral containers | ✅ OpenShell (Landlock + seccomp + netns) | ⚠️ No container — process-level only. File tools sandboxed to `workspace_dir` with path traversal checks. |
 | Cross-agent leakage | ❌ Shared memory | ✅ Isolated sessions | ✅ Per-agent sandboxed environments | ⚠️ Per-group agents with separate history. Private sessions use NullMemory. No OS-level isolation between groups. |
 | Credential theft | ❌ No protection | ⚠️ API key still mounted | ⚠️ Privacy router intercepts inference — credentials still exist inside sandbox | ✅ Infisical loads secrets at startup; held in Config only. ContentShield redacts credentials before any storage. Tools never expose secrets to the LLM. |
-| Prompt injection | ❌ Full host impact | ⚠️ Container-scoped | ⚠️ Still architecturally unsolved — damage scoped to sandbox | ⚠️ Unsolved. Damage limited by tool permissions (owner-only gates on rename/model switch) and EgressGuard blocking unknown domains. |
+| Prompt injection | ❌ Full host impact | ⚠️ Container-scoped | ⚠️ Still architecturally unsolved — damage scoped to sandbox | ✅ InjectionGuard: token-shuffle inspection on user input (HIGH) and tool results (web search = MEDIUM, internal = skipped). Blocks malicious content before it reaches the agent context. Blast radius further limited by owner-only tool gates and EgressGuard. |
 | Outbound exfiltration | ❌ Unrestricted | ❌ Unrestricted | ✅ Egress control + operator approval flow | ✅ EgressGuard: threat intel blocklist, Majestic top 10k allowlist, LLM judge, verdict cache. Domain-only — never inspects payload. |
-| Supply chain | ❌ 500k LoC unreviewed | ✅ 500 LoC auditable | ⚠️ Adds NVIDIA stack — attack surface grows | ✅ ~2k LoC core, plain Python, no frameworks. Dependencies are well-known libraries (openai, httpx, slack-bolt, aiosqlite). |
+| Supply chain | ❌ 500k LoC unreviewed | ✅ 500 LoC auditable | ⚠️ Adds NVIDIA stack — attack surface grows | ✅ ~2k LoC core, plain Python, no frameworks. Dependencies are well-known libraries (openai, httpx, slack-bolt, asyncpg). |
 | Exposed network port | ❌ 0.0.0.0 default | ✅ No listener | ✅ OpenShell netns isolation | ✅ No listener. Slack Socket Mode is outbound-only. OAuth callback server is opt-in and local. |
 | Audit trail | ❌ None | ❌ None | ✅ Built-in policy enforcement + audit logging | ✅ shield_log (credential/PII detections), egress_verdicts (domain decisions), egress_log (every outbound check), all messages stored with redaction metadata. |
 | Data → cloud leakage | ❌ No controls | ⚠️ Depends on config | ✅ Privacy router keeps internal data local | ✅ EgressGuard on all outbound HTTP. Can run fully local (Ollama + local Postgres). Cloud LLM is opt-in, not default. |
-| Data locality | ❌ Cloud-dependent | ⚠️ Local inference, but no structured local storage | ⚠️ Local inference + sandbox, but NVIDIA stack phones home for licensing | ✅ Full local stack available: Ollama for inference, PostgreSQL + pgvector for memory, SQLite for state. Nothing leaves your network unless you opt in. |
+| Data locality | ❌ Cloud-dependent | ⚠️ Local inference, but no structured local storage | ⚠️ Local inference + sandbox, but NVIDIA stack phones home for licensing | ✅ Full local stack available: Ollama for inference, single PostgreSQL + pgvector instance for all state and memory. Nothing leaves your network unless you opt in. |
 | Vendor lock-in | ❌ Tied to OpenAI | ⚠️ Ollama only | ❌ Tied to NVIDIA NIM | ✅ No lock-in. LLMClient ABC abstracts providers — swap Ollama, OpenAI, or OpenRouter per channel at runtime. Scheduler and memory run locally, not on a provider's platform. OpenBrain-style architecture means your knowledge persists independent of any model. |
 | Skill/plugin injection | ❌ Copy/paste, no review | ⚠️ Small surface but no formal ingestion | ⚠️ Sandbox limits damage but skills still copied verbatim | ✅ Learning pipeline: 4-stage LLM abstraction with security review, step count threshold, and staged activation ([#5](https://github.com/napyclaw/napyclaw/issues/5)). Raw skill text never reaches implementation. |
 
@@ -123,7 +126,7 @@ This table compares napyclaw against its predecessors and related projects acros
 
 **Auditability.** The codebase is small enough to read in an afternoon. There are no plugin systems, no dynamic code loading, no eval. Every tool is a Python class with an `execute()` method that returns a string.
 
-**Data locality.** Default configuration keeps everything on your machines — Ollama for inference, local PostgreSQL for memory, SQLite for state. Cloud LLM providers are available but opt-in, and all outbound calls pass through EgressGuard. Your data never has to leave your network.
+**Data locality.** Default configuration keeps everything on your machines — Ollama for inference, a single PostgreSQL + pgvector instance for all state, history, and memory. Cloud LLM providers are available but opt-in, and all outbound calls pass through EgressGuard. Your data never has to leave your network.
 
 **Safe skill ingestion.** Most agent frameworks import skills by copy/paste — the user or agent blindly copies instruction text into the tool registry, and any prompt injection hidden in the skill definition comes along for the ride. napyclaw's learning pipeline ([#5](https://github.com/napyclaw/napyclaw/issues/5)) solves this at the ingestion layer: a four-stage LLM pipeline abstracts the skill into a structured schema (process, tools, data), reviews it for completeness and security risks, then writes a clean Python implementation from the abstraction only. The raw skill text never reaches the implementation call. A step count threshold rejects overly complex skills and forces decomposition into composable, independently reviewed pieces.
 
@@ -132,8 +135,6 @@ This table compares napyclaw against its predecessors and related projects acros
 ### What we're working on
 
 These are known vulnerabilities with active mitigation plans. See the linked issues for details and progress.
-
-**Prompt injection** ([#2](https://github.com/napyclaw/napyclaw/issues/2)) is unsolved at every layer of this architecture. A well-crafted message can convince the agent to misuse its tools within the permissions it already has. EgressGuard and owner-only tool gates limit the blast radius, but a prompt-injected agent can still search the web, write files to the workspace, and send messages to channels it has access to. Planned mitigations: tool permission tiers, input/output tagging, and a Slack-based confirmation flow for destructive actions.
 
 **No process isolation** ([#3](https://github.com/napyclaw/napyclaw/issues/3)). Unlike NanoClaw (Docker) or NemoClaw (Landlock + seccomp), napyclaw runs as a regular Python process. If the process is compromised, the attacker has access to everything the process can see — including the Config object holding all secrets in memory. This is an acceptable tradeoff for a personal tool running on your own tailnet; it would not be acceptable in a shared or multi-tenant environment. First step: Dockerfile with non-root user and read-only filesystem.
 
@@ -202,11 +203,10 @@ Then add these secrets to your Infisical project (environment: `prod`):
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Yes |
 | `SLACK_APP_TOKEN` | `xapp-...` | Yes |
 | `BRAVE_API_KEY` | `BSA...` | Yes |
-| `VECTOR_DB_URL` | `postgresql://localhost:5432/napyclaw` | No (omit for Markdown memory) |
+| `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Yes |
 | `VECTOR_EMBED_MODEL` | `nomic-embed-text` | Yes |
 | `OAUTH_CALLBACK_PORT` | `8765` | Yes |
 | `WORKSPACE_DIR` | `/home/user/napyclaw/workspace` | Yes |
-| `DB_PATH` | `/home/user/napyclaw/napyclaw.db` | Yes |
 | `GROUPS_DIR` | `/home/user/napyclaw/groups` | Yes |
 
 **Note:** If you only plan to use OpenAI, you still need the Ollama fields (use placeholder values). Same in reverse — if you only use Ollama, provide a placeholder OpenAI key.
@@ -221,26 +221,18 @@ Then add these secrets to your Infisical project (environment: `prod`):
 6. Add both tokens to Infisical as `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`.
 7. Invite the bot to any channels where you want it available.
 
-#### Step 4: Choose your memory backend
+#### Step 4: Start the database
 
-| Option | What you need | Behavior |
-|--------|--------------|----------|
-| **Markdown (default)** | Nothing. Leave `VECTOR_DB_URL` empty in Infisical. | Each channel gets a `MEMORY.md` file. Full file injected into every prompt. Simple but doesn't scale. |
-| **pgvector** | PostgreSQL with pgvector extension. Docker: `ankane/pgvector` image. | Semantic search over memories. Only relevant context injected per turn. Scales well. |
-
-To set up pgvector:
+napyclaw requires PostgreSQL + pgvector for all persistence (state, history, memory). A `docker-compose.yml` is included — it starts the database and automatically applies both migration scripts on first launch.
 
 ```bash
-# Run PostgreSQL + pgvector in Docker
-docker run -d --name napyclaw-db \
-  -e POSTGRES_DB=napyclaw \
-  -e POSTGRES_PASSWORD=your-password \
-  -p 5432:5432 \
-  ankane/pgvector
+docker compose up -d
+```
 
-# Apply the schema
-psql postgresql://postgres:your-password@localhost:5432/napyclaw \
-  -f napyclaw/migrations/001_thoughts.sql
+This starts PostgreSQL on port 5432 with the credentials from `docker-compose.yml`. Set `DB_URL` in Infisical to match:
+
+```
+postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw
 ```
 
 Then pull the embedding model in Ollama: `ollama pull nomic-embed-text`
