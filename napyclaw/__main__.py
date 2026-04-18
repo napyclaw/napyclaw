@@ -20,7 +20,7 @@ from napyclaw.tools.identity import AddNickname, ClearNicknames, ListModelsTool,
 from napyclaw.tools.memory_tool import SaveToMemoryTool
 from napyclaw.tools.messaging import SendMessageTool
 from napyclaw.tools.scheduling import ScheduleTaskTool
-from napyclaw.tools.web_search import BraveBackend, SearXNGBackend, WebSearchTool
+from napyclaw.tools.web_search import ExaBackend, SearXNGBackend, TavilyBackend, WebSearchTool
 
 
 async def main() -> None:
@@ -49,7 +49,7 @@ async def main() -> None:
         egress.add_auto_allow_from_url(config.foundry_base_url)
     if config.aws_region:
         egress.add_auto_allow(f"bedrock-runtime.{config.aws_region}.amazonaws.com")
-    egress.add_auto_allow("api.search.brave.com")
+
     guarded_http = egress.build_client()
 
     # --- Vector memory ---
@@ -91,13 +91,16 @@ async def main() -> None:
         )
 
     # --- Search backends ---
-    _backend_map = {"brave": BraveBackend, "searxng": SearXNGBackend}
     search_backends = []
     for name in config.search_providers:
-        if name == "brave" and config.brave_api_key:
-            search_backends.append(BraveBackend(config.brave_api_key, guarded_http))
-        elif name == "searxng" and config.searxng_url:
+        if name == "searxng" and config.searxng_url:
             search_backends.append(SearXNGBackend(config.searxng_url, guarded_http))
+        elif name == "tavily" and config.tavily_api_key:
+            search_backends.append(TavilyBackend(config.tavily_api_key, guarded_http))
+            egress.add_auto_allow("api.tavily.com")
+        elif name == "exa" and config.exa_api_key:
+            search_backends.append(ExaBackend(config.exa_api_key, guarded_http))
+            egress.add_auto_allow("api.exa.ai")
     if not search_backends:
         print("  warning: no search backends configured — web_search tool will be unavailable")
 

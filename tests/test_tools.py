@@ -6,7 +6,7 @@ import pytest
 
 from napyclaw.db import Database
 from napyclaw.tools.base import Tool
-from napyclaw.tools.web_search import WebSearchTool
+from napyclaw.tools.web_search import SearXNGBackend, WebSearchTool
 from napyclaw.tools.file_ops import FileReadTool, FileWriteTool
 from napyclaw.tools.messaging import SendMessageTool
 from napyclaw.tools.scheduling import ScheduleTaskTool
@@ -41,28 +41,28 @@ class TestToolSchema:
 
 
 class TestWebSearchTool:
+    def _make_searxng_backend(self, mock_http):
+        return SearXNGBackend(base_url="http://searxng:8080", http_client=mock_http)
+
     async def test_returns_results(self):
         mock_resp = MagicMock()
-        mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {
-            "web": {
-                "results": [
-                    {"title": "Result 1", "url": "https://example.com", "description": "A result"},
-                ]
-            }
+            "results": [
+                {"title": "Result 1", "url": "https://example.com", "content": "A result"},
+            ]
         }
         mock_http = AsyncMock()
         mock_http.get = AsyncMock(return_value=mock_resp)
 
-        tool = WebSearchTool(brave_api_key="brave-test", http_client=mock_http)
+        tool = WebSearchTool(backends=[self._make_searxng_backend(mock_http)])
         result = await tool.execute(query="test query")
         assert "Result 1" in result
         assert "https://example.com" in result
 
     async def test_empty_query_returns_error(self):
         mock_http = AsyncMock()
-        tool = WebSearchTool(brave_api_key="brave-test", http_client=mock_http)
+        tool = WebSearchTool(backends=[self._make_searxng_backend(mock_http)])
         result = await tool.execute(query="")
         assert "Error" in result
 
@@ -70,21 +70,47 @@ class TestWebSearchTool:
         mock_http = AsyncMock()
         mock_http.get = AsyncMock(side_effect=Exception("timeout"))
 
-        tool = WebSearchTool(brave_api_key="brave-test", http_client=mock_http)
+        tool = WebSearchTool(backends=[self._make_searxng_backend(mock_http)])
         result = await tool.execute(query="test")
         assert "Error" in result
         assert "timeout" in result
 
-    async def test_no_results(self):
+    async def test_multi_provider_deduplicates(self):
+        def make_resp(results):
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.json.return_value = {"results": results}
+            http = AsyncMock()
+            http.get = AsyncMock(return_value=mock_resp)
+            return http
+
+        shared_url = "https://shared.com"
+        http1 = make_resp([{"title": "A", "url": shared_url, "content": "first"}])
+        http2 = make_resp([
+            {"title": "A", "url": shared_url, "content": "duplicate"},
+            {"title": "B", "url": "https://unique.com", "content": "unique"},
+        ])
+        b1 = SearXNGBackend(base_url="http://s1:8080", http_client=http1)
+        b2 = SearXNGBackend(base_url="http://s2:8080", http_client=http2)
+
+        tool = WebSearchTool(backends=[b1, b2])
+        result = await tool.execute(query="test")
+        assert result.count(shared_url) == 1
+        assert "unique.com" in result
+
+    async def test_provider_param_targets_specific_backend(self):
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"web": {"results": []}}
-        mock_http = AsyncMock()
-        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_resp.json.return_value = {
+            "results": [{"title": "Targeted", "url": "https://t.com", "content": "yes"}]
+        }
+        http = AsyncMock()
+        http.get = AsyncMock(return_value=mock_resp)
+        backend = SearXNGBackend(base_url="http://searxng:8080", http_client=http)
 
-        tool = WebSearchTool(brave_api_key="brave-test", http_client=mock_http)
-        result = await tool.execute(query="impossible query")
-        assert "No results" in result
+        tool = WebSearchTool(backends=[backend])
+        result = await tool.execute(query="test", providers=["searxng"])
+        assert "Targeted" in result
 
 
 # ---------------------------------------------------------------------------

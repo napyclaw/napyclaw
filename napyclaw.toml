@@ -7,7 +7,7 @@ foundry_base_url = "https://better-forecasting-foundry.openai.azure.com/openai/v
 vector_embed_model = "nomic-embed-text"
 
 [search]
-providers = ["searxng"]
+providers = ["searxng", "exa", "tavily"]
 searxng_url = "http://searxng:8080" # docker-compose service name
 
 [db]

@@ -65,8 +65,9 @@ class Config:
     slack_app_token: str
 
     # Web search
-    brave_api_key: str
-    search_providers: list[str]   # ordered list: e.g. ["brave", "searxng"]
+    tavily_api_key: str | None
+    exa_api_key: str | None
+    search_providers: list[str]
     searxng_url: str | None
 
     # Database
@@ -108,7 +109,8 @@ class Config:
             ollama_api_key=secret("OLLAMA_API_KEY"),
             slack_bot_token=secret("SLACK_BOT_TOKEN"),
             slack_app_token=secret("SLACK_APP_TOKEN"),
-            brave_api_key=optional_secret("BRAVE_API_KEY") or "",
+            tavily_api_key=optional_secret("TAVILY_API_KEY"),
+            exa_api_key=optional_secret("EXA_API_KEY"),
             db_url=db.get("url") or secret("DB_URL"),
             foundry_api_key=optional_secret("FOUNDRY_API_KEY"),
             aws_access_key_id=optional_secret("AWS_ACCESS_KEY_ID"),
@@ -121,7 +123,7 @@ class Config:
             foundry_base_url=llm.get("foundry_base_url"),
             aws_region=llm.get("aws_region"),
             vector_embed_model=llm.get("vector_embed_model", "nomic-embed-text"),
-            search_providers=toml.get("search", {}).get("providers", ["brave", "searxng"]),
+            search_providers=toml.get("search", {}).get("providers", ["searxng", "exa", "tavily"]),
             searxng_url=toml.get("search", {}).get("searxng_url"),
             oauth_callback_port=int(app.get("oauth_callback_port", 8765)),
             workspace_dir=Path(app.get("workspace_dir", "/app/workspace")),
@@ -173,7 +175,8 @@ def _load_infisical() -> dict[str, str]:
         "OLLAMA_API_KEY",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
-        "BRAVE_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
         "DB_URL",
         "FOUNDRY_API_KEY",
         "AWS_ACCESS_KEY_ID",

@@ -167,7 +167,8 @@ def run() -> None:
     required_secrets = [
         ("SLACK_BOT_TOKEN",     "xoxb-...",  "From api.slack.com/apps → OAuth & Permissions"),
         ("SLACK_APP_TOKEN",     "xapp-...",  "From api.slack.com/apps → Socket Mode"),
-        ("BRAVE_API_KEY",       "BSA...",    "From brave.com/search/api (free tier)"),
+        ("EXA_API_KEY",         "...",       "From exa.ai (1,000 req/mo free)"),
+        ("TAVILY_API_KEY",      "tvly-...",  "From tavily.com (free tier available)"),
     ]
 
     if provider == "openai" or provider != "openai":

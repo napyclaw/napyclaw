@@ -72,7 +72,7 @@ napyclaw/
     slack.py           Slack Socket Mode via slack-bolt
   tools/
     base.py            Tool ABC with schema property
-    web_search.py      Pluggable search backends (SearXNG default, Brave optional) with fallback
+    web_search.py      Pluggable search backends (SearXNG, Exa, Tavily) with fallback
     file_ops.py        Sandboxed file read/write
     messaging.py       Send messages to channels
     scheduling.py      Create/list/cancel scheduled tasks
@@ -265,7 +265,8 @@ Then add these secrets to your Infisical project (environment: `prod`):
 | `OLLAMA_API_KEY` | `ollama` | Yes (use `placeholder` if not using Ollama) |
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Yes |
 | `SLACK_APP_TOKEN` | `xapp-...` | Yes |
-| `BRAVE_API_KEY` | `BSA...` | Only if adding Brave as a fallback search provider |
+| `EXA_API_KEY` | `...` | Only if using Exa search fallback |
+| `TAVILY_API_KEY` | `tvly-...` | Only if using Tavily search fallback |
 | `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Only if overriding `db.url` in napyclaw.toml |
 | `FOUNDRY_API_KEY` | `abc123...` | Only if using Azure AI Foundry |
 | `AWS_ACCESS_KEY_ID` | `AKIA...` | Only if using Bedrock with static credentials |
@@ -326,7 +327,7 @@ napyclaw supports multiple search backends, tried in order with automatic fallba
 
 ```toml
 [search]
-providers = ["searxng"]
+providers = ["searxng", "exa", "tavily"]
 searxng_url = "http://searxng:8080"
 ```
 
@@ -336,11 +337,15 @@ SearXNG is a self-hosted meta-search engine that aggregates Google, Bing, and Du
 
 The default `searxng/settings.yml` in this repo enables JSON output and runs without rate limiting. Change `secret_key` before exposing it on a non-local network.
 
-#### Brave Search API (optional)
+#### Exa (optional fallback)
 
-Brave offers 2,000 free queries/month. Get a key at [brave.com/search/api](https://brave.com/search/api/) and add it to Infisical as `BRAVE_API_KEY`.
+Exa is a neural search API built explicitly for LLM use cases, with no storage restrictions. Get a key at [exa.ai](https://exa.ai) and add it to Infisical as `EXA_API_KEY`. Free tier: 1,000 requests/month.
 
-**Why Brave is not the default:** napyclaw switched to SearXNG-first specifically because of Brave's ToS restrictions. Brave's terms prohibit storing or caching search results — which conflicts with napyclaw's vector memory model, where agent responses (which may incorporate search context) are embedded for later retrieval. Brave also prohibits using results to train or evaluate AI models and reserves broad rights over query data. napyclaw is explicitly designed for AI-assisted knowledge work, making these terms a poor fit. Brave remains available as a fallback for when SearXNG results are insufficient, but raw search result blocks are stripped before memory capture regardless of which backend is used.
+#### Tavily (optional fallback)
+
+Tavily is an AI-native search API designed for agents, with explicit permission for AI use. Get a key at [tavily.com](https://tavily.com) and add it to Infisical as `TAVILY_API_KEY`. Free tier available.
+
+**Why not Brave Search?** Brave's ToS prohibits storing or caching search results, which conflicts directly with napyclaw's vector memory model. It also prohibits AI training/eval use and reserves broad rights over query data. SearXNG, Exa, and Tavily all explicitly permit AI agent use cases — Brave does not.
 
 ## Development
 
