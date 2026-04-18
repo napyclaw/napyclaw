@@ -156,6 +156,8 @@ These are known vulnerabilities with active mitigation plans. See the linked iss
 
 **Secrets in memory** ([#4](https://github.com/napyclaw/napyclaw/issues/4)). Infisical keeps secrets out of files, but `Config.from_infisical()` loads them all into a Python dataclass at startup. A memory dump of the napyclaw process would expose every API key. This is inherent to any application that needs to use secrets at runtime. Planned mitigations: on-demand secret fetch with mlock to prevent swap-file leakage, and eventually a delegated auth proxy so napyclaw never holds API keys directly.
 
+**Self-hostable comms** ([#7](https://github.com/napyclaw/napyclaw/issues/7)). Slack is the only component in the stack that can't be self-hosted. Evaluating self-hostable alternatives (Mattermost, Rocket.Chat, Zulip, Matrix) so the full stack can run on your own infrastructure with no external service dependencies.
+
 ### Legal & compliance
 
 Agent frameworks interact with external APIs on your behalf, often in ways their ToS authors didn't anticipate. napyclaw treats this as a first-class concern.
