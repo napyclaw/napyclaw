@@ -146,7 +146,7 @@ This table compares napyclaw against its predecessors and related projects acros
 | LLM | AWS Bedrock | ✅ | ✅ | ❌ | Opt-in. AWS terms explicitly prohibit using prompts/responses for model training. |
 | Secrets | Infisical | N/A | N/A | ✅ | Secrets never touch the filesystem. Self-hostable for zero cloud dependency. |
 | Database | PostgreSQL + pgvector | ✅ | ✅ | ✅ | Fully local. Your knowledge base never leaves your infrastructure. |
-| Comms | Slack (Socket Mode) | ✅ | ✅ | ❌ | Outbound-only connection — no inbound port exposed. |
+| Comms | Slack (Socket Mode) | ✅ | ✅ | ❌ | Outbound-only connection — no inbound port exposed. Only non-self-hostable component — tracked in [#7](https://github.com/napyclaw/napyclaw/issues/7). |
 
 ### What we're working on
 
