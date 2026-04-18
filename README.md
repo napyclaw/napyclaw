@@ -132,6 +132,22 @@ This table compares napyclaw against its predecessors and related projects acros
 
 **No vendor lock-in.** Most agent frameworks are tightly coupled to a single model provider — your conversation history, memory, and scheduled tasks live on that provider's platform. napyclaw keeps all of that locally. The LLMClient ABC means you can swap between Ollama, OpenAI, OpenRouter, Azure AI Foundry, and AWS Bedrock per channel at runtime. The scheduler runs against your local database, not a provider's API. The OpenBrain-inspired memory architecture (pgvector + embeddings) means your knowledge base persists and remains searchable regardless of which model you're using today. If a provider raises prices, changes terms, or disappears, you switch models — not platforms.
 
+**Deliberate provider choices.** Every external dependency in napyclaw was chosen with ToS, data rights, and AI-use permissions in mind. The table below shows the reasoning.
+
+| Category | Provider | AI use permitted | Results storable | Self-hostable | Why chosen |
+|----------|----------|-----------------|-----------------|---------------|------------|
+| Search | SearXNG | ✅ | ✅ | ✅ | Default. No ToS — you own the instance. Aggregates Google, Bing, DDG. |
+| Search | Exa | ✅ Explicitly | ✅ Explicitly | ❌ | Fallback. Neural search, built for LLMs, no storage restrictions. |
+| Search | Tavily | ✅ Explicitly | ✅ Explicitly | ❌ | Fallback. AI-native, clean summaries, explicit agent use permission. |
+| Search | Brave | ⚠️ Inference only | ❌ Prohibited | ❌ | Not included. Prohibits caching results and AI training/eval use — incompatible with vector memory. |
+| LLM | Ollama | ✅ | ✅ | ✅ | Default. Fully local, no data leaves your machine. |
+| LLM | OpenAI | ✅ | ✅ (opt-out) | ❌ | Opt-in. Industry standard, best tool-calling. API data not used for training by default. |
+| LLM | Azure AI Foundry | ✅ | ✅ | ❌ | Opt-in. Enterprise Azure terms, strong data residency controls. |
+| LLM | AWS Bedrock | ✅ | ✅ | ❌ | Opt-in. AWS terms explicitly prohibit using prompts/responses for model training. |
+| Secrets | Infisical | N/A | N/A | ✅ | Secrets never touch the filesystem. Self-hostable for zero cloud dependency. |
+| Database | PostgreSQL + pgvector | ✅ | ✅ | ✅ | Fully local. Your knowledge base never leaves your infrastructure. |
+| Comms | Slack (Socket Mode) | ✅ | ✅ | ❌ | Outbound-only connection — no inbound port exposed. |
+
 ### What we're working on
 
 These are known vulnerabilities with active mitigation plans. See the linked issues for details and progress.
@@ -139,6 +155,20 @@ These are known vulnerabilities with active mitigation plans. See the linked iss
 **No process isolation** ([#3](https://github.com/napyclaw/napyclaw/issues/3)). Unlike NanoClaw (Docker) or NemoClaw (Landlock + seccomp), napyclaw runs as a regular Python process. If the process is compromised, the attacker has access to everything the process can see — including the Config object holding all secrets in memory. This is an acceptable tradeoff for a personal tool running on your own tailnet; it would not be acceptable in a shared or multi-tenant environment. First step: Dockerfile with non-root user and read-only filesystem.
 
 **Secrets in memory** ([#4](https://github.com/napyclaw/napyclaw/issues/4)). Infisical keeps secrets out of files, but `Config.from_infisical()` loads them all into a Python dataclass at startup. A memory dump of the napyclaw process would expose every API key. This is inherent to any application that needs to use secrets at runtime. Planned mitigations: on-demand secret fetch with mlock to prevent swap-file leakage, and eventually a delegated auth proxy so napyclaw never holds API keys directly.
+
+### Legal & compliance
+
+Agent frameworks interact with external APIs on your behalf, often in ways their ToS authors didn't anticipate. napyclaw treats this as a first-class concern.
+
+**Search result licensing.** Most search APIs prohibit caching or persisting results — including using them to build embeddings or train models. napyclaw's default search stack (SearXNG, Exa, Tavily) was chosen specifically because all three permit AI agent use and result storage. Raw search result blocks are wrapped in markers and stripped from vector memory capture; only the agent's synthesis is embedded. Users can explicitly save specific content via `save_to_memory` when they want it persisted.
+
+**Query privacy.** Search queries sent to cloud providers (Exa, Tavily) may be logged and used under those providers' terms. Sensitive queries should route through SearXNG, which is self-hosted and sends queries only to the underlying search engines under their standard terms. The `providers` parameter on `web_search` lets you direct specific queries to specific backends.
+
+**LLM data retention.** Cloud LLM providers vary in how long they retain prompt and response data. OpenAI's API does not use data for training by default (opt-out required for zero retention). AWS Bedrock explicitly prohibits using prompts/responses for model training. Azure AI Foundry applies enterprise data handling terms. Ollama is local — no data leaves your machine.
+
+**Conversation data.** All messages are stored in your local PostgreSQL instance. ContentShield redacts credentials and PII (SSNs) before storage. Phone numbers and email addresses pass through by default — adjust `shield.py` if your use case requires stricter handling.
+
+**Termination and data deletion.** If you stop using a cloud search or LLM provider, their terms typically require destroying any retained data. Because napyclaw strips raw search results before vector memory capture, there is nothing to delete from your database on provider termination — only your own synthesized notes remain.
 
 ### Who this is for
 
