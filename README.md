@@ -150,14 +150,36 @@ There are two ways to get napyclaw running: have an AI agent walk you through it
 
 ### AI-guided install
 
-If you have access to Claude, ChatGPT, or any capable coding agent, give it this README and ask it to help you set up napyclaw. The agent can walk you through each decision, generate your Infisical secrets, help you create your Slack app, and troubleshoot along the way. This is the recommended path if you haven't done this kind of setup before.
+If you have access to Claude, ChatGPT, or any capable coding agent, give it this README and ask it to help you set up napyclaw. The agent can run the setup wizard, ask you questions, write `napyclaw.toml` for you, and tell you exactly which secrets to put in Infisical. This is the recommended path if you haven't done this kind of setup before.
 
 Prompt to get started:
-> "I want to set up napyclaw. Here's the README. Walk me through each step — I need help choosing an LLM, setting up Infisical, and creating the Slack app."
+
+> I want to set up napyclaw. Here's the README.
+>
+> Please help me:
+> 1. Ask me which LLM provider I want to use and what model
+> 2. Run `python -m napyclaw setup` and answer the prompts based on my answers
+> 3. Tell me exactly which secrets to add to Infisical and where to find each one
+> 4. Walk me through creating the Slack app step by step
+> 5. Start the database with `docker compose up -d`
+> 6. Pull the embedding model with `ollama pull nomic-embed-text`
+> 7. Run `python -m napyclaw` and confirm it connects
+>
+> Ask me one section at a time and wait for my answers before proceeding.
 
 ### Manual install
 
 If you're comfortable with Python, Docker, and API keys, here's what you need to do.
+
+#### Setup wizard
+
+napyclaw includes an interactive setup wizard that asks you questions, writes `napyclaw.toml`, and prints exactly which secrets to add to Infisical:
+
+```bash
+python -m napyclaw setup
+```
+
+Run this first, then follow the printed instructions. The steps below explain each decision in more detail.
 
 #### Step 1: Choose your LLM
 
@@ -175,9 +197,52 @@ For Ollama over Tailscale: install Tailscale on both the machine running Ollama 
 
 **Important:** If using Ollama, set `num_ctx` in your model's Modelfile or via the API. The default 2048 context window severely limits conversation history. For llama3.3, `num_ctx=65536` is recommended if your hardware supports it.
 
-#### Step 2: Set up Infisical
+#### Step 2: Configure napyclaw
 
-napyclaw loads all configuration from Infisical — there are no `.env` files. You have two options:
+Configuration is split into two parts: **app config** (non-sensitive, lives in `napyclaw.toml` in the repo) and **secrets** (credentials only, loaded from Infisical at startup).
+
+##### napyclaw.toml
+
+Edit `napyclaw.toml` in the repo root before running. This file is safe to commit — it contains no credentials.
+
+```toml
+[llm]
+default_provider = "foundry"       # openai | ollama | foundry | bedrock
+default_model = "grok-4-20-non-reasoning"
+openai_base_url = "https://api.openai.com/v1"
+ollama_base_url = "http://localhost:11434/v1"
+# foundry_base_url = "https://your-name.openai.azure.com/"
+# aws_region = "us-east-1"
+vector_embed_model = "nomic-embed-text"
+
+[db]
+url = "postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw"
+
+[app]
+oauth_callback_port = 8765
+workspace_dir = "/app/workspace"
+groups_dir = "/app/groups"
+# max_history_tokens = 6000
+```
+
+| Key | Example | What it controls |
+|-----|---------|-----------------|
+| `llm.default_provider` | `foundry` | Which provider to use on startup (`openai`, `ollama`, `foundry`, `bedrock`) |
+| `llm.default_model` | `grok-4-20-non-reasoning` | Deployment/model name for the default provider |
+| `llm.openai_base_url` | `https://api.openai.com/v1` | OpenAI API endpoint (change for OpenRouter) |
+| `llm.ollama_base_url` | `http://100.x.x.x:11434/v1` | Ollama endpoint, usually over Tailscale |
+| `llm.foundry_base_url` | `https://your-name.openai.azure.com/` | Azure AI Foundry endpoint |
+| `llm.aws_region` | `us-east-1` | AWS region for Bedrock |
+| `llm.vector_embed_model` | `nomic-embed-text` | Ollama embedding model for vector memory |
+| `db.url` | `postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw` | PostgreSQL connection string |
+| `app.oauth_callback_port` | `8765` | Local port for OAuth callback server (Phase 2) |
+| `app.workspace_dir` | `/app/workspace` | Sandboxed directory for file tools |
+| `app.groups_dir` | `/app/groups` | Directory for per-group Markdown memory fallback |
+| `app.max_history_tokens` | `6000` | Optional override for conversation history budget |
+
+##### Secrets (Infisical)
+
+Only credentials go in Infisical. You have two options:
 
 | Option | What it is | Best for |
 |--------|-----------|----------|
@@ -196,27 +261,15 @@ Then add these secrets to your Infisical project (environment: `prod`):
 
 | Secret | Example | Required |
 |--------|---------|----------|
-| `OPENAI_API_KEY` | `sk-...` | Yes |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Yes |
-| `OLLAMA_BASE_URL` | `http://100.x.x.x:11434/v1` | Yes |
-| `OLLAMA_API_KEY` | `ollama` | Yes (any non-empty string) |
-| `DEFAULT_MODEL` | `llama3.3:latest` | Yes |
-| `DEFAULT_PROVIDER` | `ollama` or `openai` | Yes |
+| `OPENAI_API_KEY` | `sk-...` | Yes (use `placeholder` if not using OpenAI) |
+| `OLLAMA_API_KEY` | `ollama` | Yes (use `placeholder` if not using Ollama) |
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Yes |
 | `SLACK_APP_TOKEN` | `xapp-...` | Yes |
 | `BRAVE_API_KEY` | `BSA...` | Yes |
-| `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Yes |
-| `VECTOR_EMBED_MODEL` | `nomic-embed-text` | Yes |
-| `OAUTH_CALLBACK_PORT` | `8765` | Yes |
-| `WORKSPACE_DIR` | `/home/user/napyclaw/workspace` | Yes |
-| `GROUPS_DIR` | `/home/user/napyclaw/groups` | Yes |
-| `FOUNDRY_API_KEY` | `your-foundry-key` | Only if using Azure AI Foundry |
-| `FOUNDRY_BASE_URL` | `https://your-deployment.openai.azure.com/` | Only if using Azure AI Foundry |
+| `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Only if overriding `db.url` in napyclaw.toml |
+| `FOUNDRY_API_KEY` | `abc123...` | Only if using Azure AI Foundry |
 | `AWS_ACCESS_KEY_ID` | `AKIA...` | Only if using Bedrock with static credentials |
-| `AWS_SECRET_ACCESS_KEY` | `...` | Only if using Bedrock with static credentials |
-| `AWS_REGION` | `us-east-1` | Only if using Bedrock |
-
-**Note:** If you only plan to use OpenAI, you still need the Ollama fields (use placeholder values). Same in reverse — if you only use Ollama, provide a placeholder OpenAI key.
+| `AWS_SECRET_ACCESS_KEY` | `wJalrXUtnFEM...` | Only if using Bedrock with static credentials |
 
 #### Step 3: Create a Slack app
 

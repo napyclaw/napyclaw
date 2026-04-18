@@ -1,4 +1,5 @@
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,9 +21,24 @@ except ImportError:
 
     InfisicalClient = None  # type: ignore[assignment,misc]
 
+_TOML_SEARCH = [
+    Path("napyclaw.toml"),
+    Path.home() / ".config" / "napyclaw" / "napyclaw.toml",
+]
+
 
 class ConfigError(Exception):
     pass
+
+
+def _load_toml(path: Path | None = None) -> dict:
+    """Load napyclaw.toml. Searches cwd then ~/.config/napyclaw/ if path not given."""
+    candidates = [path] if path else _TOML_SEARCH
+    for p in candidates:
+        if p and p.exists():
+            with open(p, "rb") as f:
+                return tomllib.load(f)
+    return {}
 
 
 @dataclass
@@ -66,88 +82,113 @@ class Config:
     max_history_tokens: int | None
 
     @classmethod
-    def from_infisical(cls) -> "Config":
-        client_id = os.environ.get("INFISICAL_CLIENT_ID")
-        client_secret = os.environ.get("INFISICAL_CLIENT_SECRET")
-        project_id = os.environ.get("INFISICAL_PROJECT_ID")
+    def load(cls, toml_path: Path | None = None) -> "Config":
+        """Load config from napyclaw.toml + Infisical secrets."""
+        toml = _load_toml(toml_path)
+        llm = toml.get("llm", {})
+        db = toml.get("db", {})
+        app = toml.get("app", {})
 
-        if not client_id:
-            raise ConfigError(
-                "Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and "
-                "INFISICAL_CLIENT_SECRET environment variables."
-            )
-        if not client_secret:
-            raise ConfigError(
-                "Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and "
-                "INFISICAL_CLIENT_SECRET environment variables."
-            )
-        if not project_id:
-            raise ConfigError(
-                "Cannot connect to Infisical. Check INFISICAL_PROJECT_ID environment variable."
-            )
+        secrets = _load_infisical()
 
-        if InfisicalClient is None:
-            raise ConfigError(
-                "Cannot connect to Infisical. The infisical-python package is not installed."
-            )
+        def secret(name: str) -> str:
+            val = secrets.get(name)
+            if not val:
+                raise ConfigError(f"Missing required secret: {name}")
+            return val
 
-        try:
-            client = InfisicalClient(
-                ClientSettings(client_id=client_id, client_secret=client_secret)
-            )
-        except Exception as exc:
-            raise ConfigError(
-                "Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and "
-                "INFISICAL_CLIENT_SECRET environment variables."
-            ) from exc
-
-        def require(name: str) -> str:
-            try:
-                result = client.getSecret(
-                    GetSecretOptions(
-                        environment="prod",
-                        project_id=project_id,
-                        secret_name=name,
-                    )
-                )
-                return result.secretValue
-            except Exception:
-                raise ConfigError(f"Missing required config: {name}")
-
-        def optional(name: str) -> str | None:
-            try:
-                result = client.getSecret(
-                    GetSecretOptions(
-                        environment="prod",
-                        project_id=project_id,
-                        secret_name=name,
-                    )
-                )
-                return result.secretValue
-            except Exception:
-                return None
-
-        max_history_raw = optional("MAX_HISTORY_TOKENS")
+        def optional_secret(name: str) -> str | None:
+            return secrets.get(name)
 
         return cls(
-            openai_api_key=require("OPENAI_API_KEY"),
-            openai_base_url=require("OPENAI_BASE_URL"),
-            ollama_base_url=require("OLLAMA_BASE_URL"),
-            ollama_api_key=require("OLLAMA_API_KEY"),
-            default_model=require("DEFAULT_MODEL"),
-            default_provider=require("DEFAULT_PROVIDER"),
-            slack_bot_token=require("SLACK_BOT_TOKEN"),
-            slack_app_token=require("SLACK_APP_TOKEN"),
-            brave_api_key=require("BRAVE_API_KEY"),
-            db_url=require("DB_URL"),
-            vector_embed_model=require("VECTOR_EMBED_MODEL"),
-            oauth_callback_port=int(require("OAUTH_CALLBACK_PORT")),
-            workspace_dir=Path(require("WORKSPACE_DIR")),
-            groups_dir=Path(require("GROUPS_DIR")),
-            max_history_tokens=int(max_history_raw) if max_history_raw else None,
-            foundry_api_key=optional("FOUNDRY_API_KEY"),
-            foundry_base_url=optional("FOUNDRY_BASE_URL"),
-            aws_access_key_id=optional("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=optional("AWS_SECRET_ACCESS_KEY"),
-            aws_region=optional("AWS_REGION"),
+            # Secrets from Infisical
+            openai_api_key=secret("OPENAI_API_KEY"),
+            ollama_api_key=secret("OLLAMA_API_KEY"),
+            slack_bot_token=secret("SLACK_BOT_TOKEN"),
+            slack_app_token=secret("SLACK_APP_TOKEN"),
+            brave_api_key=secret("BRAVE_API_KEY"),
+            db_url=db.get("url") or secret("DB_URL"),
+            foundry_api_key=optional_secret("FOUNDRY_API_KEY"),
+            aws_access_key_id=optional_secret("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=optional_secret("AWS_SECRET_ACCESS_KEY"),
+            # App config from toml
+            default_provider=llm.get("default_provider", "openai"),
+            default_model=llm.get("default_model", "gpt-4o"),
+            openai_base_url=llm.get("openai_base_url", "https://api.openai.com/v1"),
+            ollama_base_url=llm.get("ollama_base_url", "http://localhost:11434/v1"),
+            foundry_base_url=llm.get("foundry_base_url"),
+            aws_region=llm.get("aws_region"),
+            vector_embed_model=llm.get("vector_embed_model", "nomic-embed-text"),
+            oauth_callback_port=int(app.get("oauth_callback_port", 8765)),
+            workspace_dir=Path(app.get("workspace_dir", "/app/workspace")),
+            groups_dir=Path(app.get("groups_dir", "/app/groups")),
+            max_history_tokens=int(app["max_history_tokens"]) if app.get("max_history_tokens") else None,
         )
+
+    @classmethod
+    def from_infisical(cls) -> "Config":
+        """Backwards-compatible alias for load()."""
+        return cls.load()
+
+
+def _load_infisical() -> dict[str, str]:
+    """Fetch all secrets from Infisical. Returns a flat name→value dict."""
+    client_id = os.environ.get("INFISICAL_CLIENT_ID")
+    client_secret = os.environ.get("INFISICAL_CLIENT_SECRET")
+    project_id = os.environ.get("INFISICAL_PROJECT_ID")
+
+    if not client_id:
+        raise ConfigError(
+            "Cannot connect to Infisical. Check INFISICAL_CLIENT_ID environment variable."
+        )
+    if not client_secret:
+        raise ConfigError(
+            "Cannot connect to Infisical. Check INFISICAL_CLIENT_SECRET environment variable."
+        )
+    if not project_id:
+        raise ConfigError(
+            "Cannot connect to Infisical. Check INFISICAL_PROJECT_ID environment variable."
+        )
+    if InfisicalClient is None:
+        raise ConfigError(
+            "Cannot connect to Infisical. The infisical-python package is not installed."
+        )
+
+    try:
+        client = InfisicalClient(
+            ClientSettings(client_id=client_id, client_secret=client_secret)
+        )
+    except Exception as exc:
+        raise ConfigError(
+            "Cannot connect to Infisical. Check INFISICAL_CLIENT_ID and "
+            "INFISICAL_CLIENT_SECRET environment variables."
+        ) from exc
+
+    secret_names = [
+        "OPENAI_API_KEY",
+        "OLLAMA_API_KEY",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "BRAVE_API_KEY",
+        "DB_URL",
+        "FOUNDRY_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+    ]
+
+    result: dict[str, str] = {}
+    for name in secret_names:
+        try:
+            val = client.getSecret(
+                GetSecretOptions(
+                    environment="prod",
+                    project_id=project_id,
+                    secret_name=name,
+                )
+            )
+            if val and val.secretValue:
+                result[name] = val.secretValue
+        except Exception:
+            pass
+
+    return result

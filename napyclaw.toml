@@ -1,0 +1,17 @@
+[llm]
+default_provider = "foundry"       # openai | ollama | foundry | bedrock
+default_model = "grok-4-20-non-reasoning"
+openai_base_url = "https://api.openai.com/v1"
+ollama_base_url = "http://localhost:11434/v1"
+# foundry_base_url = "https://your-name.openai.azure.com/"
+# aws_region = "us-east-1"
+vector_embed_model = "nomic-embed-text"
+
+[db]
+url = "postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw"
+
+[app]
+oauth_callback_port = 8765
+workspace_dir = "/app/workspace"
+groups_dir = "/app/groups"
+# max_history_tokens = 6000

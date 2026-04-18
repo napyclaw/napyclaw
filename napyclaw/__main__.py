@@ -190,4 +190,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from napyclaw.setup import run as setup_run
+        setup_run()
+    else:
+        asyncio.run(main())
