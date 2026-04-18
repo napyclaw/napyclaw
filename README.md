@@ -9,7 +9,7 @@ Inspired by [nanoclaw](https://github.com/NateBJones-Projects/nanoclaw) and [OB1
 - **Multi-provider LLM support** — Ollama (local, over Tailscale), OpenAI-compatible APIs, Azure AI Foundry, or AWS Bedrock. Switch models per channel at runtime.
 - **Slack Socket Mode** — runs as a Slack bot with per-channel identity (custom names, nicknames, owner permissions).
 - **Semantic memory** — PostgreSQL + pgvector for vector search, with per-group Markdown files as fallback. Embeddings via Ollama.
-- **Tool system** — web search (Brave), file read/write, scheduled tasks, messaging, bot identity management. All exposed to the LLM as function calls.
+- **Tool system** — web search (SearXNG, self-hosted), file read/write, scheduled tasks, messaging, bot identity management. All exposed to the LLM as function calls.
 - **EgressGuard** — outbound domain policy engine. Every HTTP request passes through trust tiers (threat intel, Majestic top 10k, LLM judge) before leaving the process. Domain-only — never sees payload.
 - **ContentShield** — scans all content before storage for credentials (detect-secrets) and PII (Presidio). Redacts secrets and SSNs; allows phone/email through.
 - **Private sessions** — ephemeral DM conversations with no persistence. Nothing stored, nothing remembered.
@@ -72,7 +72,7 @@ napyclaw/
     slack.py           Slack Socket Mode via slack-bolt
   tools/
     base.py            Tool ABC with schema property
-    web_search.py      Pluggable search backends (SearXNG, Brave) with fallback
+    web_search.py      Pluggable search backends (SearXNG default, Brave optional) with fallback
     file_ops.py        Sandboxed file read/write
     messaging.py       Send messages to channels
     scheduling.py      Create/list/cancel scheduled tasks
@@ -265,7 +265,7 @@ Then add these secrets to your Infisical project (environment: `prod`):
 | `OLLAMA_API_KEY` | `ollama` | Yes (use `placeholder` if not using Ollama) |
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Yes |
 | `SLACK_APP_TOKEN` | `xapp-...` | Yes |
-| `BRAVE_API_KEY` | `BSA...` | Yes |
+| `BRAVE_API_KEY` | `BSA...` | Only if adding Brave as a fallback search provider |
 | `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Only if overriding `db.url` in napyclaw.toml |
 | `FOUNDRY_API_KEY` | `abc123...` | Only if using Azure AI Foundry |
 | `AWS_ACCESS_KEY_ID` | `AKIA...` | Only if using Bedrock with static credentials |
