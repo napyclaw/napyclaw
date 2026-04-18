@@ -105,7 +105,7 @@ This table compares napyclaw against its predecessors and related projects acros
 
 | Vector | OpenClaw | NanoClaw | NemoClaw | napyclaw |
 |---|---|---|---|---|
-| Vendor lock-in | ❌ Tied to OpenAI | ⚠️ Ollama only | ❌ Tied to NVIDIA NIM | ✅ No lock-in. LLMClient ABC abstracts providers — swap Ollama, OpenAI, or OpenRouter per channel at runtime. Scheduler and memory run locally, not on a provider's platform. OpenBrain-style architecture means your knowledge persists independent of any model. |
+| Vendor lock-in | ❌ Tied to OpenAI | ⚠️ Anthropic API format required — Ollama (via proxy), Together AI, and Fireworks work but must be Anthropic-compatible | ❌ Tied to NVIDIA NIM | ✅ No lock-in. LLMClient ABC abstracts providers — swap Ollama, OpenAI, or OpenRouter per channel at runtime. Scheduler and memory run locally, not on a provider's platform. OpenBrain-style architecture means your knowledge persists independent of any model. |
 | Outbound exfiltration | ❌ Unrestricted | ❌ Unrestricted | ✅ Egress control + operator approval flow | ✅ EgressGuard: threat intel blocklist, Majestic top 10k allowlist, LLM judge, verdict cache. Domain-only — never inspects payload. |
 | Audit trail | ❌ None | ❌ None | ✅ Built-in policy enforcement + audit logging | ✅ shield_log (credential/PII detections), egress_verdicts (domain decisions), egress_log (every outbound check), all messages stored with redaction metadata. |
 | Credential theft | ❌ No protection | ⚠️ API key still mounted | ⚠️ Privacy router intercepts inference — credentials still exist inside sandbox | ✅ Infisical loads secrets at startup; held in Config only. ContentShield redacts credentials before any storage. Tools never expose secrets to the LLM. |
