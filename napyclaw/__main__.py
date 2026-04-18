@@ -16,7 +16,7 @@ from napyclaw.models.openai_client import OpenAIClient
 from napyclaw.scheduler import Scheduler
 from napyclaw.shield import ContentShield
 from napyclaw.tools.file_ops import FileReadTool, FileWriteTool
-from napyclaw.tools.identity import AddNickname, ClearNicknames, RenameBotTool, SwitchModel
+from napyclaw.tools.identity import AddNickname, ClearNicknames, ListModelsTool, RenameBotTool, SwitchModel
 from napyclaw.tools.messaging import SendMessageTool
 from napyclaw.tools.scheduling import ScheduleTaskTool
 from napyclaw.tools.web_search import WebSearchTool
@@ -104,6 +104,7 @@ async def main() -> None:
             AddNickname(db=db, group_id=ctx.group_id),
             ClearNicknames(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             SwitchModel(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
+            ListModelsTool(config=config, http_client=guarded_http),
         ]
 
     # --- System prompt factory ---
