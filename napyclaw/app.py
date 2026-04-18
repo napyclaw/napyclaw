@@ -16,6 +16,15 @@ from napyclaw.models.openai_client import LLMUnavailableError
 from napyclaw.shield import ContentShield
 from napyclaw.tools.base import Tool
 
+_SEARCH_BLOCK = re.compile(
+    r"<!-- SEARCH_RESULTS -->.*?<!-- /SEARCH_RESULTS -->",
+    re.DOTALL,
+)
+
+
+def _strip_search_results(text: str) -> str:
+    return _SEARCH_BLOCK.sub("", text).strip()
+
 
 @dataclass
 class GroupContext:
@@ -231,10 +240,10 @@ class NapyClaw:
         finally:
             await self.channel.set_typing(msg.group_id, False)
 
-        # Capture exchange to memory
+        # Capture exchange to memory — strip raw search results, keep synthesis
         if self._memory and response:
             await self._memory.capture(
-                f"User: {text}\nAssistant: {response}",
+                f"User: {text}\nAssistant: {_strip_search_results(response)}",
                 group_id=context.group_id,
             )
 

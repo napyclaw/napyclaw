@@ -17,9 +17,10 @@ from napyclaw.scheduler import Scheduler
 from napyclaw.shield import ContentShield
 from napyclaw.tools.file_ops import FileReadTool, FileWriteTool
 from napyclaw.tools.identity import AddNickname, ClearNicknames, ListModelsTool, RenameBotTool, SwitchModel
+from napyclaw.tools.memory_tool import SaveToMemoryTool
 from napyclaw.tools.messaging import SendMessageTool
 from napyclaw.tools.scheduling import ScheduleTaskTool
-from napyclaw.tools.web_search import WebSearchTool
+from napyclaw.tools.web_search import BraveBackend, SearXNGBackend, WebSearchTool
 
 
 async def main() -> None:
@@ -89,13 +90,29 @@ async def main() -> None:
             http_client=guarded_http,
         )
 
+    # --- Search backends ---
+    _backend_map = {"brave": BraveBackend, "searxng": SearXNGBackend}
+    search_backends = []
+    for name in config.search_providers:
+        if name == "brave" and config.brave_api_key:
+            search_backends.append(BraveBackend(config.brave_api_key, guarded_http))
+        elif name == "searxng" and config.searxng_url:
+            search_backends.append(SearXNGBackend(config.searxng_url, guarded_http))
+    if not search_backends:
+        print("  warning: no search backends configured — web_search tool will be unavailable")
+
+    if config.searxng_url:
+        egress.add_auto_allow_from_url(config.searxng_url)
+
     # --- InjectionGuard ---
     injection_guard = InjectionGuard()
 
     # --- Tool factory ---
     def build_tools(ctx: GroupContext):
-        return [
-            WebSearchTool(brave_api_key=config.brave_api_key, http_client=guarded_http),
+        tools = []
+        if search_backends:
+            tools.append(WebSearchTool(backends=search_backends))
+        tools += [
             FileReadTool(config=config),
             FileWriteTool(config=config),
             SendMessageTool(channel=channel, current_group_id=ctx.group_id),
@@ -105,7 +122,9 @@ async def main() -> None:
             ClearNicknames(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             SwitchModel(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             ListModelsTool(config=config, http_client=guarded_http),
+            SaveToMemoryTool(memory=memory, group_id=ctx.group_id),
         ]
+        return tools
 
     # --- System prompt factory ---
     def build_system_prompt(ctx: GroupContext) -> str:

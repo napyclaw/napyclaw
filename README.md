@@ -72,7 +72,7 @@ napyclaw/
     slack.py           Slack Socket Mode via slack-bolt
   tools/
     base.py            Tool ABC with schema property
-    web_search.py      Brave Search API
+    web_search.py      Pluggable search backends (SearXNG, Brave) with fallback
     file_ops.py        Sandboxed file read/write
     messaging.py       Send messages to channels
     scheduling.py      Create/list/cancel scheduled tasks
@@ -320,9 +320,27 @@ In any Slack channel where the bot is invited, mention it:
 
 The bot will introduce itself and ask if you'd like to give it a different name. The first person to trigger the bot in a channel becomes the channel owner (controls renaming, model switching, and nickname clearing).
 
-### Optional: Brave Search API
+### Search providers
 
-napyclaw uses the Brave Search API for web search. Get a free API key at [brave.com/search/api](https://brave.com/search/api/) and add it to Infisical as `BRAVE_API_KEY`.
+napyclaw supports multiple search backends, tried in order with automatic fallback. Configure the priority in `napyclaw.toml`:
+
+```toml
+[search]
+providers = ["searxng"]
+searxng_url = "http://searxng:8080"
+```
+
+#### SearXNG (recommended — included in docker-compose)
+
+SearXNG is a self-hosted meta-search engine that aggregates Google, Bing, and DuckDuckGo. It's included in `docker-compose.yml` and starts automatically alongside the database — no API key required, no ToS restrictions, no query data sent to third parties.
+
+The default `searxng/settings.yml` in this repo enables JSON output and runs without rate limiting. Change `secret_key` before exposing it on a non-local network.
+
+#### Brave Search API (optional)
+
+Brave offers 2,000 free queries/month. Get a key at [brave.com/search/api](https://brave.com/search/api/) and add it to Infisical as `BRAVE_API_KEY`.
+
+**Why Brave is not the default:** napyclaw switched to SearXNG-first specifically because of Brave's ToS restrictions. Brave's terms prohibit storing or caching search results — which conflicts with napyclaw's vector memory model, where agent responses (which may incorporate search context) are embedded for later retrieval. Brave also prohibits using results to train or evaluate AI models and reserves broad rights over query data. napyclaw is explicitly designed for AI-assisted knowledge work, making these terms a poor fit. Brave remains available as a fallback for when SearXNG results are insufficient, but raw search result blocks are stripped before memory capture regardless of which backend is used.
 
 ## Development
 
