@@ -10,6 +10,7 @@ from napyclaw.db import Database
 from napyclaw.egress import EgressGuard
 from napyclaw.injection_guard import InjectionGuard
 from napyclaw.memory import VectorMemory
+from napyclaw.models.bedrock_client import BedrockClient
 from napyclaw.models.ollama_client import OllamaClient
 from napyclaw.models.openai_client import OpenAIClient
 from napyclaw.scheduler import Scheduler
@@ -43,6 +44,10 @@ async def main() -> None:
     # Auto-allow configured LLM endpoints
     egress.add_auto_allow_from_url(config.openai_base_url)
     egress.add_auto_allow_from_url(config.ollama_base_url)
+    if config.foundry_base_url:
+        egress.add_auto_allow_from_url(config.foundry_base_url)
+    if config.aws_region:
+        egress.add_auto_allow(f"bedrock-runtime.{config.aws_region}.amazonaws.com")
     egress.add_auto_allow("api.search.brave.com")
     guarded_http = egress.build_client()
 
@@ -63,13 +68,26 @@ async def main() -> None:
                 model=model,
                 http_client=guarded_http,
             )
-        else:
+        if provider == "foundry":
             return OpenAIClient(
-                api_key=config.openai_api_key,
-                base_url=config.openai_base_url,
+                api_key=config.foundry_api_key or "",
+                base_url=config.foundry_base_url or "",
                 model=model,
                 http_client=guarded_http,
             )
+        if provider == "bedrock":
+            return BedrockClient(
+                model=model,
+                region=config.aws_region or "us-east-1",
+                aws_access_key_id=config.aws_access_key_id,
+                aws_secret_access_key=config.aws_secret_access_key,
+            )
+        return OpenAIClient(
+            api_key=config.openai_api_key,
+            base_url=config.openai_base_url,
+            model=model,
+            http_client=guarded_http,
+        )
 
     # --- InjectionGuard ---
     injection_guard = InjectionGuard()

@@ -6,7 +6,7 @@ Inspired by [nanoclaw](https://github.com/NateBJones-Projects/nanoclaw) and [OB1
 
 ## Key Features
 
-- **Dual LLM support** — Ollama (local, over Tailscale) or OpenAI-compatible cloud APIs. Switch models per channel at runtime.
+- **Multi-provider LLM support** — Ollama (local, over Tailscale), OpenAI-compatible APIs, Azure AI Foundry, or AWS Bedrock. Switch models per channel at runtime.
 - **Slack Socket Mode** — runs as a Slack bot with per-channel identity (custom names, nicknames, owner permissions).
 - **Semantic memory** — PostgreSQL + pgvector for vector search, with per-group Markdown files as fallback. Embeddings via Ollama.
 - **Tool system** — web search (Brave), file read/write, scheduled tasks, messaging, bot identity management. All exposed to the LLM as function calls.
@@ -105,7 +105,7 @@ This table compares napyclaw against its predecessors and related projects acros
 
 | Vector | OpenClaw | NanoClaw | NemoClaw | napyclaw |
 |---|---|---|---|---|
-| Vendor lock-in | ❌ Tied to OpenAI | ⚠️ Anthropic API format required — Ollama (via proxy), Together AI, and Fireworks work but must be Anthropic-compatible | ❌ Tied to NVIDIA NIM | ✅ No lock-in. LLMClient ABC abstracts providers — swap Ollama, OpenAI, or OpenRouter per channel at runtime. Scheduler and memory run locally, not on a provider's platform. OpenBrain-style architecture means your knowledge persists independent of any model. |
+| Vendor lock-in | ❌ Tied to OpenAI | ⚠️ Anthropic API format required — Ollama (via proxy), Together AI, and Fireworks work but must be Anthropic-compatible | ❌ Tied to NVIDIA NIM | ✅ No lock-in. LLMClient ABC abstracts providers — swap Ollama, OpenAI, OpenRouter, Azure AI Foundry, or AWS Bedrock per channel at runtime. Scheduler and memory run locally, not on a provider's platform. OpenBrain-style architecture means your knowledge persists independent of any model. |
 | Outbound exfiltration | ❌ Unrestricted | ❌ Unrestricted | ✅ Egress control + operator approval flow | ✅ EgressGuard: threat intel blocklist, Majestic top 10k allowlist, LLM judge, verdict cache. Domain-only — never inspects payload. |
 | Audit trail | ❌ None | ❌ None | ✅ Built-in policy enforcement + audit logging | ✅ shield_log (credential/PII detections), egress_verdicts (domain decisions), egress_log (every outbound check), all messages stored with redaction metadata. |
 | Credential theft | ❌ No protection | ⚠️ API key still mounted | ⚠️ Privacy router intercepts inference — credentials still exist inside sandbox | ✅ Infisical loads secrets at startup; held in Config only. ContentShield redacts credentials before any storage. Tools never expose secrets to the LLM. |
@@ -130,7 +130,7 @@ This table compares napyclaw against its predecessors and related projects acros
 
 **Safe skill ingestion.** Most agent frameworks import skills by copy/paste — the user or agent blindly copies instruction text into the tool registry, and any prompt injection hidden in the skill definition comes along for the ride. napyclaw's learning pipeline ([#5](https://github.com/napyclaw/napyclaw/issues/5)) solves this at the ingestion layer: a four-stage LLM pipeline abstracts the skill into a structured schema (process, tools, data), reviews it for completeness and security risks, then writes a clean Python implementation from the abstraction only. The raw skill text never reaches the implementation call. A step count threshold rejects overly complex skills and forces decomposition into composable, independently reviewed pieces.
 
-**No vendor lock-in.** Most agent frameworks are tightly coupled to a single model provider — your conversation history, memory, and scheduled tasks live on that provider's platform. napyclaw keeps all of that locally. The LLMClient ABC means you can swap between Ollama, OpenAI, and OpenRouter per channel at runtime. The scheduler runs against your local database, not a provider's API. The OpenBrain-inspired memory architecture (pgvector + embeddings) means your knowledge base persists and remains searchable regardless of which model you're using today. If a provider raises prices, changes terms, or disappears, you switch models — not platforms.
+**No vendor lock-in.** Most agent frameworks are tightly coupled to a single model provider — your conversation history, memory, and scheduled tasks live on that provider's platform. napyclaw keeps all of that locally. The LLMClient ABC means you can swap between Ollama, OpenAI, OpenRouter, Azure AI Foundry, and AWS Bedrock per channel at runtime. The scheduler runs against your local database, not a provider's API. The OpenBrain-inspired memory architecture (pgvector + embeddings) means your knowledge base persists and remains searchable regardless of which model you're using today. If a provider raises prices, changes terms, or disappears, you switch models — not platforms.
 
 ### What we're working on
 
@@ -168,6 +168,8 @@ You need at least one. You can use both and switch between them per channel at r
 | **Ollama (local)** | A machine running Ollama, reachable over Tailscale. Pull your model (`ollama pull llama3.3`). Set `num_ctx` explicitly — Ollama defaults to 2048 regardless of model capability. | Privacy, no API costs, full control |
 | **OpenAI** | An OpenAI API key from platform.openai.com | Best tool-calling models, no hardware required |
 | **OpenRouter** | An OpenRouter API key from openrouter.ai | Access to many models (Claude, Gemini, Llama, etc.) through one API |
+| **Azure AI Foundry** | An Azure AI Foundry endpoint and API key. Set `FOUNDRY_BASE_URL` to your deployment endpoint and `FOUNDRY_API_KEY` to your key. | Azure-hosted models (GPT-4o, Phi, Mistral, etc.), enterprise Azure billing |
+| **AWS Bedrock** | AWS credentials (access key + secret, or IAM role) and a region. Install the optional dependency: `pip install -e ".[bedrock]"`. | Claude, Llama, Nova, Titan — all through AWS billing and IAM |
 
 For Ollama over Tailscale: install Tailscale on both the machine running Ollama and the machine running napyclaw. The Ollama base URL will be something like `http://100.x.x.x:11434/v1`.
 
@@ -208,6 +210,11 @@ Then add these secrets to your Infisical project (environment: `prod`):
 | `OAUTH_CALLBACK_PORT` | `8765` | Yes |
 | `WORKSPACE_DIR` | `/home/user/napyclaw/workspace` | Yes |
 | `GROUPS_DIR` | `/home/user/napyclaw/groups` | Yes |
+| `FOUNDRY_API_KEY` | `your-foundry-key` | Only if using Azure AI Foundry |
+| `FOUNDRY_BASE_URL` | `https://your-deployment.openai.azure.com/` | Only if using Azure AI Foundry |
+| `AWS_ACCESS_KEY_ID` | `AKIA...` | Only if using Bedrock with static credentials |
+| `AWS_SECRET_ACCESS_KEY` | `...` | Only if using Bedrock with static credentials |
+| `AWS_REGION` | `us-east-1` | Only if using Bedrock |
 
 **Note:** If you only plan to use OpenAI, you still need the Ollama fields (use placeholder values). Same in reverse — if you only use Ollama, provide a placeholder OpenAI key.
 

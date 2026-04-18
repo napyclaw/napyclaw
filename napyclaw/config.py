@@ -35,6 +35,15 @@ class Config:
     default_model: str
     default_provider: str
 
+    # Azure AI Foundry (optional)
+    foundry_api_key: str | None
+    foundry_base_url: str | None
+
+    # AWS Bedrock (optional)
+    aws_access_key_id: str | None
+    aws_secret_access_key: str | None
+    aws_region: str | None
+
     # Slack
     slack_bot_token: str
     slack_app_token: str
@@ -136,4 +145,9 @@ class Config:
             workspace_dir=Path(require("WORKSPACE_DIR")),
             groups_dir=Path(require("GROUPS_DIR")),
             max_history_tokens=int(max_history_raw) if max_history_raw else None,
+            foundry_api_key=optional("FOUNDRY_API_KEY"),
+            foundry_base_url=optional("FOUNDRY_BASE_URL"),
+            aws_access_key_id=optional("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=optional("AWS_SECRET_ACCESS_KEY"),
+            aws_region=optional("AWS_REGION"),
         )
