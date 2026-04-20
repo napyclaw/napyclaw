@@ -1052,9 +1052,11 @@ git commit -m "feat: add atomic mode guidance and OWNER_CHANNEL to setup wizard"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update the architecture diagram**
+- [ ] **Step 1: Add container topology diagram**
 
-Find the existing flow diagram in README (the block starting `Message arrives (Slack Socket Mode)`) and replace it entirely with this diagram verbatim:
+The existing flow diagram (`Message arrives (Slack Socket Mode)...`) explains the Python process architecture inside the bot container — **do not replace or remove it**. It should be updated in Step 2 to reflect the comms container boundary.
+
+Before the existing Python flow diagram, add a new `### Container architecture` subsection with this diagram verbatim:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -1097,9 +1099,12 @@ Find the existing flow diagram in README (the block starting `Message arrives (S
 
 **Legend:** container boxes · `{application layer}`
 
-- [ ] **Step 2: Update the "how it works" prose**
+- [ ] **Step 2: Update the Python flow diagram heading and entry point**
 
-Update the description that currently mentions "Slack Socket Mode" as the entry point to describe the comms container as the messaging adapter.
+Keep the Python process flow diagram intact — it correctly describes what happens inside the bot container. Make two targeted edits only:
+
+1. Add a heading above it: `### Bot container — internal flow`
+2. Change the first line from `Message arrives (Slack Socket Mode)` to `Message arrives (from comms container via HTTP)` — the bot no longer connects to Slack directly; it receives messages from the comms service.
 
 - [ ] **Step 3: Add "Atomic mode" section**
 
