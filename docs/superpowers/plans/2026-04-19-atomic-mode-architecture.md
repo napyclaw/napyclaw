@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **For subagents encountering inconsistencies:** If the existing code doesn't match what the plan expects, or a design decision isn't clear from the plan, **read the spec before going off script**. Find the relevant section using the line numbers in the task's **Spec sections:** block, then read the entire section (not just the quoted snippet) to understand the full design intent. Make decisions consistent with the spec, then report your reasoning in your status update.
+
 **Goal:** Restructure napyclaw into a 6-container Docker stack with network-isolated egress control, a stateless comms adapter, and a self-hosted Infisical instance — enabling fully self-contained ("atomic mode") deployment.
 
 **Architecture:** The bot container has zero direct internet access; all outbound traffic routes through one of three dedicated containers: `comms` (messaging), `egressguard` (LLM/search APIs with async approval flow), or `searxng` (local search). Four Docker networks (`comms-net`, `egress-net`, `search-net`, `data-net`) enforce this isolation at the kernel level.
@@ -36,6 +38,11 @@
 ---
 
 ## Task 1: Restructure docker-compose.yml with 4 networks and 6 services
+
+**Spec sections:**
+- **§ Containers** (lines 59–70) — full container list, roles, internet access, persistent state
+- **§ Network Zones** (lines 74–105) — `comms-net`, `egress-net`, `search-net`, `data-net` membership and routing rules
+- **§ Container Topology** (lines 14–53) — visual reference for what connects to what
 
 **Files:**
 - Modify: `docker-compose.yml`
@@ -170,6 +177,12 @@ git commit -m "feat: restructure compose — 6 services, 4 isolated networks"
 ---
 
 ## Task 2: Build the egressguard service
+
+**Spec sections:**
+- **§ EgressGuard Approval Flow — Request lifecycle** (lines 129–143) — 202 response shape, token, comms callback path
+- **§ Approve once vs approve always** (lines 145–154) — four decision variants and their effect on allowlist/blocklist
+- **§ Application Layers — EgressGuard** (lines 119–125) — `{domain allowlist}`, `{LLMClient}`, `{exfil sanitize}` responsibilities
+- **§ Network Zones** (lines 83–85) — `egress-net` membership: egressguard has internet; bot does not
 
 **Files:**
 - Create: `services/egressguard/Dockerfile`
@@ -420,6 +433,12 @@ git commit -m "feat: add egressguard service — async 202 approval flow, approv
 
 ## Task 3: Build the comms service
 
+**Spec sections:**
+- **§ Containers — comms** (lines 65) — stateless, messaging APIs only, swappable platform
+- **§ EgressGuard Approval Flow — Request lifecycle** (lines 129–143) — comms receives approval request from egressguard (step 3), delivers to owner (step 4), forwards response back (step 6)
+- **§ Network Zones — comms-net** (lines 78–81) — comms has internet; bot does not; comms also relays egressguard approvals
+- **§ Atomic Mode** (lines 176–191) — comms is the only gap for full atomic mode; must be swappable
+
 **Files:**
 - Create: `services/comms/Dockerfile`
 - Create: `services/comms/main.py`
@@ -589,6 +608,10 @@ git commit -m "feat: add comms service — stateless Slack adapter with approval
 
 ## Task 4: Add egress-routed HTTP client to bot config
 
+**Spec sections:**
+- **§ Network Zones — egress-net** (lines 83–85) — all bot outbound HTTP routes through egressguard; bot has no direct internet
+- **§ Application Layers — bot** (lines 109–118) — `{ToolSystem}` makes outbound calls; `{LLMClient}` makes LLM API calls — both must route through egressguard
+
 **Files:**
 - Modify: `napyclaw/config.py` (add `egress_url`, `comms_url`)
 - Modify: `napyclaw/egress.py` (add `build_routed_client()` that proxies through egressguard service)
@@ -687,6 +710,10 @@ git commit -m "feat: add egress_url/comms_url to Config, add build_routed_client
 
 ## Task 5: Add 202/stepback retry handling to ToolSystem
 
+**Spec sections:**
+- **§ EgressGuard Approval Flow — Request lifecycle** (lines 133–141) — step 4: bot's `{ToolSystem}` receives 202, surfaces "awaiting approval" to LLM, continues other work — chain is not blocked
+- **§ Async retry cadence** (lines 156–173) — 202 triggers retry schedule; bot polls `/status/{token}`; `pending`/`approved`/`denied` responses
+
 **Files:**
 - Modify: `napyclaw/tools/web_search.py`
 - Modify: `napyclaw/tools/base.py`
@@ -767,6 +794,10 @@ git commit -m "feat: handle 202 pending approval in WebSearchTool — surfaces t
 ---
 
 ## Task 6: Add stepback retry scheduler for pending approvals
+
+**Spec sections:**
+- **§ Async retry cadence** (lines 156–173) — exact cadence: 30s → 60s → 2m → 5m → 10m → 20m → fail; callback is primary path, retry is safety net; final failure message text specified; pending token stays valid after exhaustion
+- **§ EgressGuard Approval Flow — Request lifecycle** (lines 129–143) — step 6: comms fires callback to egressguard on user response; bot's next poll or callback resolves without waiting for next interval
 
 **Files:**
 - Modify: `napyclaw/scheduler.py`
@@ -890,6 +921,11 @@ git commit -m "feat: add PendingApprovalJob with stepback retry cadence 30s→20
 
 ## Task 7: Wire bot startup to use egress-routed client
 
+**Spec sections:**
+- **§ Network Zones — egress-net** (lines 83–85) — bot has no internet; all outbound HTTP via egressguard
+- **§ Network Zones — search-net** (lines 87–90) — bot sends search queries to searxng on search-net; searxng URL is `http://searxng:8080`
+- **§ Containers — bot** (lines 63) — "No — internal only" for internet access
+
 **Files:**
 - Modify: `napyclaw/__main__.py`
 - Modify: `tests/test_app.py`
@@ -956,6 +992,10 @@ git commit -m "feat: wire bot to egress-routed client, resolve searxng via SEARX
 
 ## Task 8: Update setup.py to document atomic mode and clarify optional secrets
 
+**Spec sections:**
+- **§ Atomic Mode** (lines 176–191) — full table of always-in-stack vs atomic vs cloud-upgrade options; comms is the only gap
+- **§ What This Design Does Not Cover** (lines 195–202) — Infisical bootstrap automation is a follow-on; don't attempt full automation here
+
 **Files:**
 - Modify: `napyclaw/setup.py`
 
@@ -1003,6 +1043,11 @@ git commit -m "feat: add atomic mode guidance and OWNER_CHANNEL to setup wizard"
 ---
 
 ## Task 9: Update README
+
+**Spec sections:**
+- **§ Container Topology** (lines 14–53) — use this diagram verbatim in the README
+- **§ Atomic Mode** (lines 176–191) — use this table as the basis for the new "Atomic mode" README section
+- **§ Containers** (lines 59–70) — source for the updated container description prose
 
 **Files:**
 - Modify: `README.md`
@@ -1062,6 +1107,10 @@ git commit -m "docs: update README for 6-container atomic mode architecture"
 ---
 
 ## Task 10: Smoke test full stack locally
+
+**Spec sections:**
+- **§ Container Topology** (lines 14–53) — verify the running stack matches this diagram
+- **§ Network Zones** (lines 74–105) — verify bot cannot reach internet directly; verify each container is on only its intended networks
 
 **Files:** none — verification only
 
