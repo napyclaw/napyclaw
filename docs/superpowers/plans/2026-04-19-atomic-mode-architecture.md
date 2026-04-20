@@ -1,6 +1,6 @@
 # Atomic Mode Architecture Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.  Never use compound shell commands (`cmd1 && cmd2`) — each shell call must be atomic.
 
 > **For subagents encountering inconsistencies:** If the existing code doesn't match what the plan expects, or a design decision isn't clear from the plan, **read the spec before going off script**. Find the relevant section using the line numbers in the task's **Spec sections:** block, then read the entire section (not just the quoted snippet) to understand the full design intent. Make decisions consistent with the spec, then report your reasoning in your status update.
 
