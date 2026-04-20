@@ -1054,7 +1054,48 @@ git commit -m "feat: add atomic mode guidance and OWNER_CHANNEL to setup wizard"
 
 - [ ] **Step 1: Update the architecture diagram**
 
-Replace the existing flow diagram in README with the container topology diagram from the spec (`docs/superpowers/specs/2026-04-19-atomic-mode-architecture-design.md` — Container Topology section).
+Find the existing flow diagram in README (the block starting `Message arrives (Slack Socket Mode)`) and replace it entirely with this diagram verbatim:
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  EXTERNAL                                                                    ║
+║  Slack · Mattermost        Exa · Tavily · LLM APIs        Google·Bing·DDG   ║
+╚════════════╤══════════════════════════════╤═══════════════════════╤══════════╝
+             │ ▲                            │ ▲                     │ ▲
+             ▼ │                            ▼ │                     ▼ │
+  ┌───────────────────┐             ┌────────────────────────┐  ┌─────────────┐
+  │       comms       │◄─approvals──│      egressguard       │  │   searxng   │
+  │  {proto adapter}  │             │  {domain allowlist}    │  │ {meta-search}│
+  │    stateless      │             │  {LLMClient}           │  │             │
+  │                   │             │  {exfil sanitize}      │  │             │
+  └───────────────────┘             └────────────────────────┘  └─────────────┘
+             │ ▲                            │ ▲                     │ ▲
+             ▼ │                            ▼ │                     ▼ │
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ┌──────────────────────────────────────────────────────────────────────┐   ║
+║  │ bot                                                                  │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {InjectionGuard}   inbound prompt + outbound query scan              │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {ToolSystem}   web_search · file · send_message · scheduler          │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {LLMClient}    Ollama · OpenAI · Foundry · Bedrock                   │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {ContentShield}    scans all content before DB write                 │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {GroupContext}     per-channel identity · history · memory           │   ║
+║  └──────────────────────────────────────────────────────────────────────┘   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+              │                                               │
+              ▼                                               ▼
+  ┌─────────────────────────┐               ┌─────────────────────────┐
+  │           db            │               │        infisical         │
+  │   postgres + pgvector   │               │   secrets (self-hosted)  │
+  │       no internet       │               │       no internet        │
+  └─────────────────────────┘               └─────────────────────────┘
+```
+
+**Legend:** container boxes · `{application layer}`
 
 - [ ] **Step 2: Update the "how it works" prose**
 
