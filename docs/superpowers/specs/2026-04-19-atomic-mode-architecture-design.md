@@ -128,17 +128,48 @@ EgressGuard runs as its own container with its own application layers:
 
 ## EgressGuard Approval Flow
 
+### Request lifecycle
+
 When the bot makes an outbound call to an unknown domain:
 
-1. `egressguard` intercepts and blocks the request
-2. `{LLMClient}` inside egressguard judges the domain — if clearly safe (e.g. a well-known API) it auto-approves and adds to the allowlist
-3. If inconclusive or suspicious, `egressguard` sends an approval request to `comms` via `comms-net`
-4. `comms` delivers the request to the owner via the configured messaging platform
-5. Owner approves or denies via the messaging platform
-6. `comms` receives the response and forwards it to `egressguard`
-7. `egressguard` allows or permanently blocks the domain and completes or rejects the original request
+1. `egressguard` intercepts the request
+2. `{LLMClient}` inside egressguard judges the domain — if clearly safe (e.g. a well-known API) it auto-approves and adds to the permanent allowlist; if clearly malicious it permanently blocks
+3. If inconclusive, `egressguard` returns `202 Accepted` to the bot with a pending token and sends an approval request to `comms`
+4. `bot`'s `{ToolSystem}` receives the 202, surfaces "awaiting approval for domain X" to the LLM, and continues other work — the chain is not blocked
+5. `comms` delivers the approval request to the owner with two response options: **Approve once** or **Approve always**
+6. Owner responds; `comms` POSTs the decision back to `egressguard` as an event callback
+7. `egressguard` updates its state and the pending request resolves immediately
 
 Neither `bot` nor `egressguard` is directly coupled to the messaging platform — `comms` is the only component that knows which platform is in use. Swapping Slack for a self-hosted comms platform (issue [#7](https://github.com/napyclaw/napyclaw/issues/7)) requires no changes to egressguard.
+
+### Approve once vs approve always
+
+The comms approval message presents two options:
+
+| Response | Effect |
+|---|---|
+| **Approve once** | Domain is allowed for this request only. Next request to the same domain triggers a new approval flow. |
+| **Approve always** | Domain is added to the permanent allowlist in `egressguard`. Future requests pass through without prompting. |
+
+Deny has the same two variants (deny once, deny always / block permanently). Allowlist management — viewing, editing, and revoking approved domains — is out of scope for this spec.
+
+### Async retry cadence
+
+The event callback is the primary resolution path. The stepback retry is a safety net for callback failure or bot restarts:
+
+```
+202 returned → retry schedule starts in bot scheduler:
+  30s → 60s → 2m → 5m → 10m → 20m → fail with "pending approval"
+```
+
+At each retry, bot polls `egressguard` for the token status:
+- `pending` → wait for next interval
+- `approved` → complete the original request
+- `denied` → surface failure to LLM
+
+When the user approves (use case 1: active chat in seconds; use case 2: away for 30+ minutes), `comms` fires the callback to `egressguard` immediately. The bot's next scheduler poll — or the callback itself if the bot exposes a notify endpoint — resolves the request without waiting for the next retry interval.
+
+After the final 20m retry with no resolution, the task fails with a message the LLM can surface to the user: *"Waiting on domain approval for X — retry the task once approved."* The pending token remains valid; the user can still approve later and re-run.
 
 ---
 
@@ -163,6 +194,7 @@ The only current gap is the comms layer — tracked in issue #7.
 
 ## What This Design Does Not Cover
 
+- **Allowlist management** — viewing, editing, revoking, and bulk-managing approved/blocked domains is a separate feature and spec.
 - **Container escape** — kernel-level isolation is assumed. A full container escape bypasses all of this. Out of scope for a personal single-user deployment.
 - **Multi-tenant isolation** — this architecture is designed for one owner. Shared deployments require additional sandboxing (see NemoClaw).
 - **Infisical bootstrap automation** — setup.py currently requires manual Infisical project and secret creation. Automating this is a follow-on task.
