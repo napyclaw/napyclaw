@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from napyclaw.egress import EgressDeniedError, EgressGuard, EgressVerdict
@@ -172,10 +173,17 @@ class TestGuardedClient:
         await client.aclose()
 
 
-def test_build_routed_client_uses_proxy_url():
+async def test_build_routed_client_rewrites_request_url(respx_mock):
     from napyclaw.egress import build_routed_client
+    # Mock the egressguard proxy endpoint
+    respx_mock.get("http://egressguard:8000/proxy").mock(
+        return_value=httpx.Response(200, json={"result": "ok"})
+    )
     client = build_routed_client("http://egressguard:8000")
-    # The transport rewrites URLs at send time; verify the transport's proxy URL
-    assert "egressguard" in client._transport._proxy
-    import asyncio
-    asyncio.new_event_loop().run_until_complete(client.aclose())
+    resp = await client.get("https://api.openai.com/v1/chat")
+    # Verify the request was rewritten to the proxy URL
+    assert len(respx_mock.calls) == 1
+    called_url = str(respx_mock.calls[0].request.url)
+    assert "egressguard:8000/proxy" in called_url
+    assert "api.openai.com" in called_url
+    await client.aclose()
