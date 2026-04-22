@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 app = FastAPI(title="comms")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "")
 OWNER_CHANNEL = os.environ.get("OWNER_CHANNEL", "")
 
 _slack = AsyncWebClient(token=SLACK_BOT_TOKEN)
@@ -34,7 +34,10 @@ class RegisterRequest(BaseModel):
 
 @app.post("/send")
 async def send(req: SendRequest) -> dict:
-    resp = await _slack.chat_postMessage(channel=req.channel, text=req.text)
+    try:
+        resp = await _slack.chat_postMessage(channel=req.channel, text=req.text)
+    except SlackApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc.response.get("error", exc)))
     return {"ok": resp.get("ok", False)}
 
 
@@ -51,7 +54,10 @@ async def notify_approval(req: ApprovalRequest) -> dict:
         f"• `deny always {req.token}`"
     )
     if OWNER_CHANNEL:
-        await _slack.chat_postMessage(channel=OWNER_CHANNEL, text=text)
+        try:
+            await _slack.chat_postMessage(channel=OWNER_CHANNEL, text=text)
+        except SlackApiError:
+            pass  # approval notification is best-effort
     return {"ok": True}
 
 

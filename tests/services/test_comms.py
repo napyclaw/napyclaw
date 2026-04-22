@@ -17,6 +17,7 @@ async def client(monkeypatch):
         comms_main._slack = mock_wc.return_value
         # OWNER_CHANNEL is read at module level, so patch it directly
         comms_main.OWNER_CHANNEL = "C-owner"
+        comms_main._bot_webhook = None
         from services.comms.main import app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c, mock_wc.return_value
@@ -27,6 +28,7 @@ async def test_send_message(client):
     resp = await c.post("/send", json={"channel": "C123", "text": "hello"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+    mock_slack.chat_postMessage.assert_called_once_with(channel="C123", text="hello")
 
 
 async def test_notify_approval(client):
