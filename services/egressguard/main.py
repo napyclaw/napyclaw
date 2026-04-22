@@ -8,7 +8,8 @@ from enum import Enum
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response as FastAPIResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="egressguard")
@@ -81,9 +82,9 @@ class CallbackRequest(BaseModel):
     hostname: str
 
 
-@app.get("/proxy")
-async def proxy(url: str) -> Any:
-    """Proxy a GET request through egressguard. Only GET requests are supported."""
+@app.api_route("/proxy", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def proxy(request: Request, url: str) -> Any:
+    """Proxy any HTTP request through egressguard, forwarding method and body."""
     parsed = httpx.URL(url)
     hostname = parsed.host
 
@@ -94,9 +95,15 @@ async def proxy(url: str) -> Any:
         raise HTTPException(status_code=403, detail=f"Domain blocked: {hostname}")
 
     if _is_allowed(hostname):
-        from fastapi.responses import Response as FastAPIResponse
+        body = await request.body()
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=30.0)
+            resp = await client.request(
+                method=request.method,
+                url=url,
+                content=body,
+                headers={k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")},
+                timeout=30.0,
+            )
         return FastAPIResponse(
             content=resp.content,
             status_code=resp.status_code,
@@ -116,7 +123,6 @@ async def proxy(url: str) -> Any:
     except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError):
         pass  # comms notification is best-effort; token is still valid
 
-    from fastapi.responses import JSONResponse
     return JSONResponse(
         status_code=202,
         content={"status": "pending", "token": token, "retry_after": 30},

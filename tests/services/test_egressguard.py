@@ -23,6 +23,12 @@ async def test_allowed_domain_proxies(client, respx_mock):
     assert resp.status_code == 200
 
 
+async def test_allowed_domain_proxies_post(client, respx_mock):
+    respx_mock.post("https://api.exa.ai/search").mock(return_value=httpx.Response(200, json={"results": []}))
+    resp = await client.post("/proxy", params={"url": "https://api.exa.ai/search"}, json={"query": "test"})
+    assert resp.status_code == 200
+
+
 async def test_unknown_domain_returns_202(client):
     resp = await client.get("/proxy", params={"url": "https://unknown-domain-xyz.io/api"})
     assert resp.status_code == 202
