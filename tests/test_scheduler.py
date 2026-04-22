@@ -223,8 +223,15 @@ async def test_pending_approval_retry_schedule():
     assert job.next_retry_delay() == 30
     job.advance()
     assert job.next_retry_delay() == 60
-    for _ in range(5):
-        job.advance()
+    job.advance()
+    assert job.next_retry_delay() == 120
+    job.advance()
+    assert job.next_retry_delay() == 300
+    job.advance()
+    assert job.next_retry_delay() == 600
+    job.advance()
+    assert job.next_retry_delay() == 1200
+    job.advance()
     assert job.is_exhausted()
 
 

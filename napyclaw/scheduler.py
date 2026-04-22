@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from napyclaw.agent import Agent
 from napyclaw.db import Database, ScheduledTask
 from napyclaw.models.openai_client import LLMUnavailableError
@@ -189,7 +191,6 @@ class PendingApprovalJob:
 
     async def poll(self) -> bool:
         """Poll egressguard. Returns True if approved, False if still pending or denied."""
-        import httpx
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{self.egress_url}/status/{self.token}")
         status = resp.json().get("status")
