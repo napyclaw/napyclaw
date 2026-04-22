@@ -41,6 +41,9 @@ async def main() -> None:
     shield = ContentShield()
 
     # --- EgressGuard ---
+    # In container mode, guarded_http routes through the egressguard container rather
+    # than this in-process guard. These add_auto_allow* calls are preserved for local
+    # dev runs (without Docker) and for a future LLM judge wiring.
     egress = EgressGuard(db=db)
     # Auto-allow configured LLM endpoints
     egress.add_auto_allow_from_url(config.openai_base_url)
