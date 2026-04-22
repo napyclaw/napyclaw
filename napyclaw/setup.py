@@ -165,10 +165,9 @@ def run() -> None:
     print("Add these to your Infisical project (environment: prod).\n")
 
     required_secrets = [
-        ("SLACK_BOT_TOKEN",     "xoxb-...",  "From api.slack.com/apps → OAuth & Permissions"),
-        ("SLACK_APP_TOKEN",     "xapp-...",  "From api.slack.com/apps → Socket Mode"),
-        ("EXA_API_KEY",         "...",       "From exa.ai (1,000 req/mo free)"),
-        ("TAVILY_API_KEY",      "tvly-...",  "From tavily.com (free tier available)"),
+        ("SLACK_BOT_TOKEN", "xoxb-...", "From api.slack.com/apps → OAuth & Permissions"),
+        ("SLACK_APP_TOKEN", "xapp-...", "From api.slack.com/apps → Socket Mode"),
+        ("SLACK_OWNER_CHANNEL", "C0123ABCD", "Slack channel ID where egress approvals are sent — find it in the channel URL"),
     ]
 
     if provider == "openai" or provider != "openai":
@@ -195,11 +194,25 @@ def run() -> None:
             ("AWS_SECRET_ACCESS_KEY", "...",     "IAM user secret key"),
         ]
 
-    col1 = max(len(s[0]) for s in required_secrets) + 2
-    col2 = max(len(s[1]) for s in required_secrets) + 2
+    optional_search_secrets = [
+        ("EXA_API_KEY",    "...",     "Optional. Neural search — better for obscure/recent topics than SearXNG alone."),
+        ("TAVILY_API_KEY", "tvly-...", "Optional. AI-native search — clean summaries, good for factual lookups."),
+    ]
+
+    col1 = max(len(s[0]) for s in required_secrets + optional_search_secrets) + 2
+    col2 = max(len(s[1]) for s in required_secrets + optional_search_secrets) + 2
     print(f"  {'Secret':<{col1}} {'Example':<{col2}} Notes")
     print(f"  {'─'*col1} {'─'*col2} {'─'*40}")
     for name, example, note in required_secrets:
+        print(f"  {name:<{col1}} {example:<{col2}} {note}")
+
+    print()
+    print("  Search is handled locally by SearXNG (already in docker-compose.yml — no key needed).")
+    print("  The following are optional cloud backups that improve results for obscure or recent")
+    print("  queries. Leave them out to keep the stack fully self-contained (atomic mode).\n")
+    print(f"  {'Secret':<{col1}} {'Example':<{col2}} Notes")
+    print(f"  {'─'*col1} {'─'*col2} {'─'*40}")
+    for name, example, note in optional_search_secrets:
         print(f"  {name:<{col1}} {example:<{col2}} {note}")
 
     print("\nThen set these three environment variables on the machine running napyclaw:")
@@ -218,6 +231,15 @@ def run() -> None:
     else:
         print(f"  4. Run: ollama pull {vector_embed_model}  (for vector memory)")
         print("  5. Run: python -m napyclaw")
+
+    print()
+    print("  Atomic mode (fully self-contained, no cloud dependencies):")
+    print("  • Use Ollama for LLM inference (set default_provider = 'ollama')")
+    print("  • SearXNG is already included — no Exa or Tavily key needed")
+    print("  • Run Infisical from this stack: docker compose up infisical")
+    print("  • Replace Slack with a self-hosted comms platform (see issue #7)")
+    print()
+    print("  All components except comms can run fully on-prem today.")
     print()
 
 
