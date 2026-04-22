@@ -32,6 +32,8 @@ services:
         condition: service_started
       comms:
         condition: service_started
+      infisical:
+        condition: service_started
 
   egressguard:
     build: ./services/egressguard
@@ -43,6 +45,9 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      comms:
+        condition: service_started
 
   comms:
     build: ./services/comms
@@ -71,6 +76,7 @@ services:
 
   db:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     networks:
       - data-net
     environment:
@@ -95,7 +101,7 @@ services:
     environment:
       ENCRYPTION_KEY: ${INFISICAL_ENCRYPTION_KEY}
       AUTH_SECRET: ${INFISICAL_AUTH_SECRET}
-      DB_CONNECTION_URI: postgresql://napyclaw:napyclaw-local@db:5432/infisical
+      DB_CONNECTION_URI: postgresql://napyclaw:napyclaw-local@db:5432/napyclaw
     depends_on:
       db:
         condition: service_healthy
