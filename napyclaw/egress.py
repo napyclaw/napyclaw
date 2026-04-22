@@ -188,3 +188,25 @@ class EgressGuard:
         hostname = request.url.host
         if hostname and not await self.check(hostname):
             raise EgressDeniedError(f"Egress denied: {hostname}")
+
+
+def build_routed_client(egress_url: str, **kwargs) -> httpx.AsyncClient:
+    """Build an httpx client that routes all requests through the egressguard service."""
+
+    class _RoutingTransport(httpx.AsyncBaseTransport):
+        def __init__(self, proxy_url: str) -> None:
+            self._proxy = proxy_url.rstrip("/")
+            self._inner = httpx.AsyncHTTPTransport()
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            target_url = str(request.url)
+            proxy_request = httpx.Request(
+                method=request.method,
+                url=f"{self._proxy}/proxy",
+                params={"url": target_url},
+                headers=request.headers,
+                content=request.content,
+            )
+            return await self._inner.handle_async_request(proxy_request)
+
+    return httpx.AsyncClient(transport=_RoutingTransport(egress_url), **kwargs)

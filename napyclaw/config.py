@@ -77,6 +77,10 @@ class Config:
     # OAuth
     oauth_callback_port: int
 
+    # Container URLs
+    egress_url: str
+    comms_url: str
+
     # Paths
     workspace_dir: Path
     groups_dir: Path
@@ -126,6 +130,8 @@ class Config:
             search_providers=toml.get("search", {}).get("providers", ["searxng", "exa", "tavily"]),
             searxng_url=toml.get("search", {}).get("searxng_url"),
             oauth_callback_port=int(app.get("oauth_callback_port", 8765)),
+            egress_url=os.environ.get("EGRESS_URL", "http://egressguard:8000"),
+            comms_url=os.environ.get("COMMS_URL", "http://comms:8001"),
             workspace_dir=Path(app.get("workspace_dir", "/app/workspace")),
             groups_dir=Path(app.get("groups_dir", "/app/groups")),
             max_history_tokens=int(app["max_history_tokens"]) if app.get("max_history_tokens") else None,

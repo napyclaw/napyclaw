@@ -170,3 +170,12 @@ class TestGuardedClient:
             await client.get("http://unknown-evil.com/test")
 
         await client.aclose()
+
+
+def test_build_routed_client_uses_proxy_url():
+    from napyclaw.egress import build_routed_client
+    client = build_routed_client("http://egressguard:8000")
+    # The transport rewrites URLs at send time; verify the transport's proxy URL
+    assert "egressguard" in client._transport._proxy
+    import asyncio
+    asyncio.new_event_loop().run_until_complete(client.aclose())

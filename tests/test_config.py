@@ -98,3 +98,26 @@ def test_config_missing_project_id_raises():
                     clear=True):
         with pytest.raises(ConfigError, match="INFISICAL_PROJECT_ID"):
             Config.from_infisical()
+
+
+def test_config_loads_egress_url(monkeypatch):
+    mock_client = _make_infisical_client(FULL_SECRETS)
+    monkeypatch.setenv("EGRESS_URL", "http://egressguard:8000")
+    monkeypatch.setenv("COMMS_URL", "http://comms:8001")
+    with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
+         patch.dict("os.environ", BOOTSTRAP_ENV):
+        config = Config.from_infisical()
+    assert config.egress_url == "http://egressguard:8000"
+    assert config.comms_url == "http://comms:8001"
+
+
+def test_config_egress_url_defaults(monkeypatch):
+    # When env vars not set, should use defaults
+    monkeypatch.delenv("EGRESS_URL", raising=False)
+    monkeypatch.delenv("COMMS_URL", raising=False)
+    mock_client = _make_infisical_client(FULL_SECRETS)
+    with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
+         patch.dict("os.environ", BOOTSTRAP_ENV):
+        config = Config.from_infisical()
+    assert config.egress_url == "http://egressguard:8000"
+    assert config.comms_url == "http://comms:8001"
