@@ -203,7 +203,7 @@ class WebSearchTool(Tool):
         sections: list[str] = []
         for backend, (results, error) in zip(targets, results_per_backend):
             if error.startswith("PENDING:"):
-                _, token, retry_after = error.split(":", 2)
+                _, retry_after, token = error.split(":", 2)
                 sections.append(
                     f"[{backend.name}: pending domain approval (token: {token}), retry in {retry_after}s]"
                 )
@@ -231,7 +231,7 @@ class WebSearchTool(Tool):
     async def _run_single(self, query: str, backend: SearchBackend) -> str:
         results, error = await self._fetch(query, backend)
         if error.startswith("PENDING:"):
-            _, token, retry_after = error.split(":", 2)
+            _, retry_after, token = error.split(":", 2)
             return f"Search pending approval — domain not yet whitelisted (token: {token}). Will retry in {retry_after}s."
         if error:
             return f"Error: {backend.name} failed — {error}"
@@ -246,6 +246,6 @@ class WebSearchTool(Tool):
             results = await backend.search(query)
             return results, ""
         except PendingApprovalError as exc:
-            return [], f"PENDING:{exc.token}:{exc.retry_after}"
+            return [], f"PENDING:{exc.retry_after}:{exc.token}"
         except Exception as exc:
             return [], str(exc)

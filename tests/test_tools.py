@@ -126,6 +126,23 @@ class TestWebSearchTool:
         assert "pending approval" in result.lower()
         assert "tok1" in result
 
+    async def test_web_search_multi_backend_pending_on_202(self):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 202
+        mock_resp.json.return_value = {"status": "pending", "token": "tok2", "retry_after": 60}
+        mock_http1 = AsyncMock()
+        mock_http1.get = AsyncMock(return_value=mock_resp)
+        mock_http2 = AsyncMock()
+        mock_http2.get = AsyncMock(return_value=mock_resp)
+
+        b1 = SearXNGBackend(base_url="http://s1:8080", http_client=mock_http1)
+        b2 = SearXNGBackend(base_url="http://s2:8080", http_client=mock_http2)
+        tool = WebSearchTool(backends=[b1, b2])
+        result = await tool.execute(query="test multi")
+        assert "pending" in result.lower()
+        assert "tok2" in result
+
 
 # ---------------------------------------------------------------------------
 # FileReadTool / FileWriteTool
