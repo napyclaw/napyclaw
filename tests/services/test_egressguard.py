@@ -29,6 +29,7 @@ async def test_unknown_domain_returns_202(client):
     data = resp.json()
     assert "token" in data
     assert data["status"] == "pending"
+    assert data["retry_after"] == 30
 
 
 async def test_poll_pending_token(client):
@@ -53,3 +54,30 @@ async def test_callback_denies_token(client):
     await client.post("/callback", json={"token": token, "decision": "deny_always", "hostname": "unknown-domain-xyz.io"})
     poll = await client.get(f"/status/{token}")
     assert poll.json()["status"] == "denied"
+
+
+async def test_callback_approve_once_does_not_add_to_allowlist(client):
+    resp = await client.get("/proxy", params={"url": "https://unknown-domain-xyz.io/api"})
+    token = resp.json()["token"]
+    await client.post("/callback", json={"token": token, "decision": "approve_once", "hostname": "unknown-domain-xyz.io"})
+    # After approve_once, a new request to the same domain should still return 202 (not cached)
+    resp2 = await client.get("/proxy", params={"url": "https://unknown-domain-xyz.io/api"})
+    assert resp2.status_code == 202
+
+
+async def test_callback_deny_once_does_not_add_to_blocklist(client):
+    resp = await client.get("/proxy", params={"url": "https://unknown-domain-xyz.io/api"})
+    token = resp.json()["token"]
+    await client.post("/callback", json={"token": token, "decision": "deny_once", "hostname": "unknown-domain-xyz.io"})
+    # After deny_once, a new request to the same domain should still return 202 (not blocked forever)
+    resp2 = await client.get("/proxy", params={"url": "https://unknown-domain-xyz.io/api"})
+    assert resp2.status_code == 202
+
+
+async def test_blocked_domain_returns_403(client):
+    resp = await client.get("/proxy", params={"url": "https://blocked-domain.io/api"})
+    token = resp.json()["token"]
+    await client.post("/callback", json={"token": token, "decision": "deny_always", "hostname": "blocked-domain.io"})
+    # Subsequent request to the blocked domain should return 403
+    resp2 = await client.get("/proxy", params={"url": "https://blocked-domain.io/api"})
+    assert resp2.status_code == 403
