@@ -271,3 +271,22 @@ async def test_pending_approval_job_not_resolved_when_pending(respx_mock):
     )
     resolved = await job.poll()
     assert resolved is False
+
+
+async def test_pending_approval_job_returns_false_on_network_error(respx_mock):
+    import httpx
+    from napyclaw.scheduler import PendingApprovalJob
+
+    respx_mock.get("http://egressguard:8000/status/tok3").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    job = PendingApprovalJob(
+        token="tok3",
+        hostname="example.com",
+        egress_url="http://egressguard:8000",
+        original_tool="web_search",
+        original_kwargs={"query": "test"},
+        group_id="C123",
+    )
+    resolved = await job.poll()
+    assert resolved is False

@@ -190,8 +190,11 @@ class PendingApprovalJob:
         return self._attempt >= len(RETRY_CADENCE_SECONDS)
 
     async def poll(self) -> bool:
-        """Poll egressguard. Returns True if approved, False if still pending or denied."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.egress_url}/status/{self.token}")
-        status = resp.json().get("status")
-        return status == "approved"
+        """Poll egressguard. Returns True if approved, False if pending/denied/unreachable."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.egress_url}/status/{self.token}")
+            resp.raise_for_status()
+            return resp.json().get("status") == "approved"
+        except (httpx.HTTPError, httpx.TimeoutException):
+            return False
