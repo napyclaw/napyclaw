@@ -7,7 +7,7 @@ from napyclaw.app import GroupContext, NapyClaw
 from napyclaw.channels.slack import SlackChannel
 from napyclaw.config import Config, ConfigError
 from napyclaw.db import Database
-from napyclaw.egress import EgressGuard
+from napyclaw.egress import EgressGuard, build_routed_client
 from napyclaw.injection_guard import InjectionGuard
 from napyclaw.memory import VectorMemory
 from napyclaw.models.bedrock_client import BedrockClient
@@ -50,7 +50,7 @@ async def main() -> None:
     if config.aws_region:
         egress.add_auto_allow(f"bedrock-runtime.{config.aws_region}.amazonaws.com")
 
-    guarded_http = egress.build_client()
+    guarded_http = build_routed_client(config.egress_url)
 
     # --- Vector memory ---
     memory = VectorMemory(

@@ -128,7 +128,7 @@ class Config:
             aws_region=llm.get("aws_region"),
             vector_embed_model=llm.get("vector_embed_model", "nomic-embed-text"),
             search_providers=toml.get("search", {}).get("providers", ["searxng", "exa", "tavily"]),
-            searxng_url=toml.get("search", {}).get("searxng_url"),
+            searxng_url=toml.get("search", {}).get("searxng_url") or os.environ.get("SEARXNG_URL", "http://searxng:8080"),
             oauth_callback_port=int(app.get("oauth_callback_port", 8765)),
             egress_url=os.environ.get("EGRESS_URL", "http://egressguard:8000"),
             comms_url=os.environ.get("COMMS_URL", "http://comms:8001"),

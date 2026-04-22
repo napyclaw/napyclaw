@@ -305,3 +305,9 @@ class TestNapyClawHandleMessage:
         channel.send.assert_called_once()
         sent_text = channel.send.call_args[0][1]
         assert "Ollama" in sent_text
+
+
+def test_build_routed_client_is_imported_in_main():
+    """Verify build_routed_client is importable from __main__ context."""
+    import napyclaw.__main__ as main_module
+    assert hasattr(main_module, "build_routed_client")
