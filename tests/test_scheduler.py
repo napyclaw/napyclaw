@@ -206,3 +206,61 @@ class TestScheduler:
         await scheduler._poll_once()
 
         channel.send.assert_called_once_with("C001", "Custom model response")
+
+
+async def test_pending_approval_retry_schedule():
+    from napyclaw.scheduler import PendingApprovalJob, RETRY_CADENCE_SECONDS
+    assert RETRY_CADENCE_SECONDS == [30, 60, 120, 300, 600, 1200]
+
+    job = PendingApprovalJob(
+        token="tok1",
+        hostname="example.com",
+        egress_url="http://egressguard:8000",
+        original_tool="web_search",
+        original_kwargs={"query": "test"},
+        group_id="C123",
+    )
+    assert job.next_retry_delay() == 30
+    job.advance()
+    assert job.next_retry_delay() == 60
+    for _ in range(5):
+        job.advance()
+    assert job.is_exhausted()
+
+
+async def test_pending_approval_job_resolves_on_approved(respx_mock):
+    import httpx
+    from napyclaw.scheduler import PendingApprovalJob
+
+    respx_mock.get("http://egressguard:8000/status/tok1").mock(
+        return_value=httpx.Response(200, json={"status": "approved", "token": "tok1"})
+    )
+    job = PendingApprovalJob(
+        token="tok1",
+        hostname="example.com",
+        egress_url="http://egressguard:8000",
+        original_tool="web_search",
+        original_kwargs={"query": "test"},
+        group_id="C123",
+    )
+    resolved = await job.poll()
+    assert resolved is True
+
+
+async def test_pending_approval_job_not_resolved_when_pending(respx_mock):
+    import httpx
+    from napyclaw.scheduler import PendingApprovalJob
+
+    respx_mock.get("http://egressguard:8000/status/tok2").mock(
+        return_value=httpx.Response(200, json={"status": "pending", "token": "tok2"})
+    )
+    job = PendingApprovalJob(
+        token="tok2",
+        hostname="example.com",
+        egress_url="http://egressguard:8000",
+        original_tool="web_search",
+        original_kwargs={"query": "test"},
+        group_id="C123",
+    )
+    resolved = await job.poll()
+    assert resolved is False

@@ -153,3 +153,44 @@ class Scheduler:
                 await self._db.update_task_status(
                     task.id, "active", next_run=next_retry, retry_count=new_retry
                 )
+
+
+RETRY_CADENCE_SECONDS = [30, 60, 120, 300, 600, 1200]
+
+
+class PendingApprovalJob:
+    def __init__(
+        self,
+        token: str,
+        hostname: str,
+        egress_url: str,
+        original_tool: str,
+        original_kwargs: dict,
+        group_id: str,
+    ) -> None:
+        self.token = token
+        self.hostname = hostname
+        self.egress_url = egress_url
+        self.original_tool = original_tool
+        self.original_kwargs = original_kwargs
+        self.group_id = group_id
+        self._attempt = 0
+
+    def next_retry_delay(self) -> int:
+        if self._attempt < len(RETRY_CADENCE_SECONDS):
+            return RETRY_CADENCE_SECONDS[self._attempt]
+        return RETRY_CADENCE_SECONDS[-1]
+
+    def advance(self) -> None:
+        self._attempt += 1
+
+    def is_exhausted(self) -> bool:
+        return self._attempt >= len(RETRY_CADENCE_SECONDS)
+
+    async def poll(self) -> bool:
+        """Poll egressguard. Returns True if approved, False if still pending or denied."""
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self.egress_url}/status/{self.token}")
+        status = resp.json().get("status")
+        return status == "approved"
