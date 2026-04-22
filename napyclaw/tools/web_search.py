@@ -9,6 +9,13 @@ from napyclaw.tools.base import Tool
 if TYPE_CHECKING:
     import httpx
 
+
+class PendingApprovalError(Exception):
+    def __init__(self, token: str, retry_after: int) -> None:
+        self.token = token
+        self.retry_after = retry_after
+        super().__init__(f"Pending approval — token: {token}")
+
 # Per-backend guidance surfaced to the LLM in the tool description.
 _BACKEND_DESCRIPTIONS = {
     "searxng": (
@@ -67,6 +74,12 @@ class SearXNGBackend(SearchBackend):
             params={"q": query, "format": "json", "pageno": 1},
             headers={"Accept": "application/json"},
         )
+        if resp.status_code == 202:
+            data = resp.json()
+            raise PendingApprovalError(
+                token=data.get("token", "unknown"),
+                retry_after=data.get("retry_after", 30),
+            )
         resp.raise_for_status()
         data = resp.json()
         return [
@@ -92,6 +105,12 @@ class TavilyBackend(SearchBackend):
             json={"api_key": self._api_key, "query": query, "max_results": count},
             headers={"Content-Type": "application/json"},
         )
+        if resp.status_code == 202:
+            data = resp.json()
+            raise PendingApprovalError(
+                token=data.get("token", "unknown"),
+                retry_after=data.get("retry_after", 30),
+            )
         resp.raise_for_status()
         data = resp.json()
         return [
@@ -117,6 +136,12 @@ class ExaBackend(SearchBackend):
             json={"query": query, "numResults": count, "contents": {"text": {"maxCharacters": 500}}},
             headers={"x-api-key": self._api_key, "Content-Type": "application/json"},
         )
+        if resp.status_code == 202:
+            data = resp.json()
+            raise PendingApprovalError(
+                token=data.get("token", "unknown"),
+                retry_after=data.get("retry_after", 30),
+            )
         resp.raise_for_status()
         data = resp.json()
         return [
@@ -177,6 +202,12 @@ class WebSearchTool(Tool):
         seen_urls: set[str] = set()
         sections: list[str] = []
         for backend, (results, error) in zip(targets, results_per_backend):
+            if error.startswith("PENDING:"):
+                _, token, retry_after = error.split(":", 2)
+                sections.append(
+                    f"[{backend.name}: pending domain approval (token: {token}), retry in {retry_after}s]"
+                )
+                continue
             if error:
                 sections.append(f"[{backend.name}: failed — {error}]")
                 continue
@@ -199,6 +230,9 @@ class WebSearchTool(Tool):
 
     async def _run_single(self, query: str, backend: SearchBackend) -> str:
         results, error = await self._fetch(query, backend)
+        if error.startswith("PENDING:"):
+            _, token, retry_after = error.split(":", 2)
+            return f"Search pending approval — domain not yet whitelisted (token: {token}). Will retry in {retry_after}s."
         if error:
             return f"Error: {backend.name} failed — {error}"
         if not results:
@@ -211,5 +245,7 @@ class WebSearchTool(Tool):
         try:
             results = await backend.search(query)
             return results, ""
+        except PendingApprovalError as exc:
+            return [], f"PENDING:{exc.token}:{exc.retry_after}"
         except Exception as exc:
             return [], str(exc)

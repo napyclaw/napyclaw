@@ -112,6 +112,20 @@ class TestWebSearchTool:
         result = await tool.execute(query="test", providers=["searxng"])
         assert "Targeted" in result
 
+    async def test_web_search_returns_pending_on_202(self):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 202
+        mock_resp.json.return_value = {"status": "pending", "token": "tok1", "retry_after": 30}
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+
+        backend = SearXNGBackend(base_url="http://searxng:8080", http_client=mock_http)
+        tool = WebSearchTool(backends=[backend])
+        result = await tool.execute(query="test query")
+        assert "pending approval" in result.lower()
+        assert "tok1" in result
+
 
 # ---------------------------------------------------------------------------
 # FileReadTool / FileWriteTool
