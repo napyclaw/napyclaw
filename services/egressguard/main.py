@@ -53,12 +53,22 @@ _allowlist: set[str] = set(_STATIC_ALLOW)
 _blocklist: set[str] = set()
 
 
-def _is_allowed(hostname: str) -> bool:
+def _is_blocked(hostname: str) -> bool:
+    parts = hostname.split(".")
+    for i in range(len(parts) - 1):
+        candidate = ".".join(parts[i:])
+        if candidate in _blocklist:
+            return True
     if hostname in _blocklist:
-        return False
+        return True
+    return False
+
+
+def _is_allowed(hostname: str) -> bool:
+    parts = hostname.split(".")
+    # Check exact and parent-domain allowlist entries
     if hostname in _allowlist:
         return True
-    parts = hostname.split(".")
     for i in range(1, len(parts)):
         if ".".join(parts[i:]) in _allowlist:
             return True
@@ -77,18 +87,21 @@ async def proxy(url: str) -> Any:
     parsed = httpx.URL(url)
     hostname = parsed.host
 
+    if not hostname:
+        raise HTTPException(status_code=400, detail="url must be an absolute URL with a hostname")
+
+    if _is_blocked(hostname):
+        raise HTTPException(status_code=403, detail=f"Domain blocked: {hostname}")
+
     if _is_allowed(hostname):
         from fastapi.responses import Response as FastAPIResponse
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
+            resp = await client.get(url, timeout=30.0)
         return FastAPIResponse(
             content=resp.content,
             status_code=resp.status_code,
             media_type=resp.headers.get("content-type", "application/octet-stream"),
         )
-
-    if hostname in _blocklist:
-        raise HTTPException(status_code=403, detail=f"Domain blocked: {hostname}")
 
     token = secrets.token_urlsafe(16)
     _pending[token] = PendingToken(token=token, hostname=hostname, original_url=url)

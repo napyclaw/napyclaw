@@ -81,3 +81,11 @@ async def test_blocked_domain_returns_403(client):
     # Subsequent request to the blocked domain should return 403
     resp2 = await client.get("/proxy", params={"url": "https://blocked-domain.io/api"})
     assert resp2.status_code == 403
+
+
+async def test_subdomain_of_blocked_domain_returns_403(client):
+    resp = await client.get("/proxy", params={"url": "https://blocked-domain.io/api"})
+    token = resp.json()["token"]
+    await client.post("/callback", json={"token": token, "decision": "deny_always", "hostname": "blocked-domain.io"})
+    resp2 = await client.get("/proxy", params={"url": "https://sub.blocked-domain.io/api"})
+    assert resp2.status_code == 403
