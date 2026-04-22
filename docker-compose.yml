@@ -1,23 +1,82 @@
+networks:
+  comms-net:
+    driver: bridge
+  egress-net:
+    driver: bridge
+  search-net:
+    driver: bridge
+  data-net:
+    internal: true
+    driver: bridge
+
 services:
   bot:
     build: .
     restart: unless-stopped
+    networks:
+      - comms-net
+      - egress-net
+      - search-net
+      - data-net
     environment:
       INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      EGRESS_URL: http://egressguard:8000
+      COMMS_URL: http://comms:8001
+      SEARXNG_URL: http://searxng:8080
     depends_on:
       db:
         condition: service_healthy
+      egressguard:
+        condition: service_started
+      comms:
+        condition: service_started
+
+  egressguard:
+    build: ./services/egressguard
+    restart: unless-stopped
+    networks:
+      - egress-net
+    environment:
+      COMMS_URL: http://comms:8001
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  comms:
+    build: ./services/comms
+    restart: unless-stopped
+    networks:
+      - comms-net
+    environment:
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    networks:
+      - search-net
+    volumes:
+      - ./searxng:/etc/searxng
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
 
   db:
     image: pgvector/pgvector:pg16
+    networks:
+      - data-net
     environment:
       POSTGRES_DB: napyclaw
       POSTGRES_USER: napyclaw
       POSTGRES_PASSWORD: napyclaw-local
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./napyclaw/migrations/001_thoughts.sql:/docker-entrypoint-initdb.d/001_thoughts.sql
@@ -28,21 +87,20 @@ services:
       timeout: 5s
       retries: 5
 
-  searxng:
-    image: searxng/searxng:latest
+  infisical:
+    image: infisical/infisical:latest
     restart: unless-stopped
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./searxng:/etc/searxng
+    networks:
+      - data-net
     environment:
-      SEARXNG_BASE_URL: http://localhost:8080/
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
+      ENCRYPTION_KEY: ${INFISICAL_ENCRYPTION_KEY}
+      AUTH_SECRET: ${INFISICAL_AUTH_SECRET}
+      DB_CONNECTION_URI: postgresql://napyclaw:napyclaw-local@db:5432/infisical
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8888:8080"
 
 volumes:
   pgdata:
