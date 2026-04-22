@@ -21,8 +21,53 @@ Inspired by [nanoclaw](https://github.com/NateBJones-Projects/nanoclaw) and [OB1
 
 napyclaw is plain OOP Python — no frameworks, no magic. Each class has one job.
 
+### Container architecture
+
 ```
-Message arrives (Slack Socket Mode)
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  EXTERNAL                                                                    ║
+║  Slack · Mattermost        Exa · Tavily · LLM APIs        Google·Bing·DDG   ║
+╚════════════╤══════════════════════════════╤═══════════════════════╤══════════╝
+             │ ▲                            │ ▲                     │ ▲
+             ▼ │                            ▼ │                     ▼ │
+  ┌───────────────────┐             ┌────────────────────────┐  ┌─────────────┐
+  │       comms       │◄─approvals──│      egressguard       │  │   searxng   │
+  │  {proto adapter}  │             │  {domain allowlist}    │  │ {meta-search}│
+  │    stateless      │             │  {LLMClient}           │  │             │
+  │                   │             │  {exfil sanitize}      │  │             │
+  └───────────────────┘             └────────────────────────┘  └─────────────┘
+             │ ▲                            │ ▲                     │ ▲
+             ▼ │                            ▼ │                     ▼ │
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ┌──────────────────────────────────────────────────────────────────────┐   ║
+║  │ bot                                                                  │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {InjectionGuard}   inbound prompt + outbound query scan              │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {ToolSystem}   web_search · file · send_message · scheduler          │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {LLMClient}    Ollama · OpenAI · Foundry · Bedrock                   │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {ContentShield}    scans all content before DB write                 │   ║
+║  ├──────────────────────────────────────────────────────────────────────┤   ║
+║  │ {GroupContext}     per-channel identity · history · memory           │   ║
+║  └──────────────────────────────────────────────────────────────────────┘   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+              │                                               │
+              ▼                                               ▼
+  ┌─────────────────────────┐               ┌─────────────────────────┐
+  │           db            │               │        infisical         │
+  │   postgres + pgvector   │               │   secrets (self-hosted)  │
+  │       no internet       │               │       no internet        │
+  └─────────────────────────┘               └─────────────────────────┘
+```
+
+**Legend:** container boxes · `{application layer}`
+
+### Bot container — internal flow
+
+```
+Message arrives (from comms container via HTTP)
     |
     v
 SlackChannel --- normalizes to Message dataclass
@@ -114,7 +159,7 @@ This table compares napyclaw against its predecessors and related projects acros
 | Data locality | ❌ Cloud-dependent | ⚠️ Local inference, but no structured local storage | ⚠️ Local inference + sandbox, but NVIDIA stack phones home for licensing | ✅ Full local stack available: Ollama for inference, single PostgreSQL + pgvector instance for all state and memory. Nothing leaves your network unless you opt in. |
 | Data → cloud leakage | ❌ No controls | ⚠️ Depends on config | ✅ Privacy router keeps internal data local | ✅ EgressGuard on all outbound HTTP. Can run fully local (Ollama + local Postgres). Cloud LLM is opt-in, not default. |
 | Supply chain | ❌ 500k LoC unreviewed | ✅ 500 LoC auditable | ⚠️ Adds NVIDIA stack — attack surface grows | ✅ ~2k LoC core, plain Python, no frameworks. Dependencies are well-known libraries (openai, httpx, slack-bolt, asyncpg). |
-| Exposed network port | ❌ 0.0.0.0 default | ✅ No listener | ✅ OpenShell netns isolation | ✅ No listener. Slack Socket Mode is outbound-only. OAuth callback server is opt-in and local. |
+| Exposed network port | ❌ 0.0.0.0 default | ✅ No listener | ✅ OpenShell netns isolation | ✅ No listener. comms, egressguard, and searxng containers handle all outbound — bot has no internet access. |
 | Host RCE | ❌ Critical | ✅ Ephemeral containers | ✅ OpenShell (Landlock + seccomp + netns) | ⚠️ No container — process-level only. File tools sandboxed to `workspace_dir` with path traversal checks. |
 | Cross-agent leakage | ❌ Shared memory | ✅ Isolated sessions | ✅ Per-agent sandboxed environments | ⚠️ Per-group agents with separate history. Private sessions use NullMemory. No OS-level isolation between groups. |
 
@@ -147,6 +192,26 @@ This table compares napyclaw against its predecessors and related projects acros
 | Secrets | Infisical | N/A | N/A | ✅ | Secrets never touch the filesystem. Self-hostable for zero cloud dependency. |
 | Database | PostgreSQL + pgvector | ✅ | ✅ | ✅ | Fully local. Your knowledge base never leaves your infrastructure. |
 | Comms | Slack (Socket Mode) | ✅ | ✅ | ❌ | Outbound-only connection — no inbound port exposed. Only non-self-hostable component — tracked in [#7](https://github.com/napyclaw/napyclaw/issues/7). |
+
+### Atomic mode
+
+Every component in napyclaw can run on your own infrastructure with no external service dependencies:
+
+| Layer | Self-hosted option |
+|---|---|
+| LLM | Ollama — runs locally or over Tailscale |
+| Search | SearXNG — included in `docker-compose.yml` |
+| Secrets | Infisical — included in `docker-compose.yml` |
+| Comms | Self-hosted Mattermost or Matrix (issue [#7](https://github.com/napyclaw/napyclaw/issues/7)) |
+| Database | PostgreSQL + pgvector — always local |
+| Egress control | egressguard — always local |
+
+In atomic mode, traffic only leaves your infrastructure through three scoped lanes:
+- **`comms-net`** — messaging platform only
+- **`egress-net`** — LLM APIs and cloud search (Exa, Tavily) — optional, only if you choose cloud providers
+- **`search-net`** — SearXNG to search engines
+
+The only current gap is the comms layer (Slack is not self-hostable) — tracked in issue [#7](https://github.com/napyclaw/napyclaw/issues/7).
 
 ### What we're working on
 
