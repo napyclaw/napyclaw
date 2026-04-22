@@ -73,6 +73,7 @@ class CallbackRequest(BaseModel):
 
 @app.get("/proxy")
 async def proxy(url: str) -> Any:
+    """Proxy a GET request through egressguard. Only GET requests are supported."""
     parsed = httpx.URL(url)
     hostname = parsed.host
 
@@ -99,8 +100,8 @@ async def proxy(url: str) -> Any:
                 json={"token": token, "hostname": hostname, "url": url},
                 timeout=5.0,
             )
-    except Exception:
-        pass
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError):
+        pass  # comms notification is best-effort; token is still valid
 
     from fastapi.responses import JSONResponse
     return JSONResponse(
@@ -126,10 +127,10 @@ async def callback(req: CallbackRequest) -> dict:
     if req.decision in (Decision.approve_once, Decision.approve_always):
         entry.status = TokenStatus.approved
         if req.decision == Decision.approve_always:
-            _allowlist.add(req.hostname)
+            _allowlist.add(entry.hostname)
     else:
         entry.status = TokenStatus.denied
         if req.decision == Decision.deny_always:
-            _blocklist.add(req.hostname)
+            _blocklist.add(entry.hostname)
 
     return {"ok": True}
