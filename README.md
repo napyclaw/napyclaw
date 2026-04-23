@@ -1,6 +1,6 @@
 # napyclaw
 
-A personal AI agent framework in Python, built to be small enough to understand and easy to customize. Runs on Ollama over Tailscale for local inference, or any OpenAI-compatible API (OpenAI, OpenRouter) with your own keys. Ships with Slack out of the gate.
+A personal AI agent framework in Python, built to be small enough to understand and easy to customize. Runs on Ollama over Tailscale for local inference, or any OpenAI-compatible API (OpenAI, OpenRouter) with your own keys. Ships with Slack out of the gate. Designed to run in **atomic mode** — fully self-hosted with no external service dependencies — or with cloud providers as opt-in.
 
 Inspired by [nanoclaw](https://github.com/NateBJones-Projects/nanoclaw) and [OB1 (Open Brain)](https://github.com/NateBJones-Projects/OB1) for knowledge/embedding architecture.
 
@@ -15,7 +15,7 @@ Inspired by [nanoclaw](https://github.com/NateBJones-Projects/nanoclaw) and [OB1
 - **Private sessions** — ephemeral DM conversations with no persistence. Nothing stored, nothing remembered.
 - **Scheduled tasks** — cron, interval, or one-shot prompts with retry and exponential backoff.
 - **InjectionGuard** — token-shuffle content inspector with rotating verification keys. Shuffles and bags input before sending to a reviewer LLM, defeating injection sequences while preserving detectable vocabulary. Blocks malicious content, warns on suspicious content. Applied to user input (HIGH) and tool results (source-tagged: web search = MEDIUM, internal tools = skipped).
-- **Secrets via Infisical** — all config loaded from Infisical Cloud at startup. No `.env` files.
+- **Secrets via Infisical** — all config loaded from Infisical at startup. No `.env` files. Infisical is included in `docker-compose.yml` and runs self-hosted by default.
 
 ## Architecture
 
@@ -99,7 +99,7 @@ napyclaw/
   __main__.py          Entry point
   app.py               NapyClaw orchestrator, GroupContext, GroupQueue
   agent.py             Agent — conversation loop, tool execution, history management
-  config.py            Config from Infisical Cloud
+  config.py            Config from Infisical
   db.py                PostgreSQL persistence (asyncpg)
   memory.py            MemoryBackend: VectorMemory (pgvector), MarkdownMemory, NullMemory
   injection_guard.py   InjectionGuard — token-shuffle content inspector with rotating verification keys
@@ -128,7 +128,7 @@ napyclaw/
 
 ### How the pieces connect
 
-**Config** loads all secrets from Infisical at startup into a typed dataclass. Nothing else touches Infisical.
+**Config** loads all secrets from the Infisical instance (self-hosted by default) at startup into a typed dataclass. Nothing else touches Infisical.
 
 **LLMClient** is an ABC with two implementations. `OpenAIClient` wraps the OpenAI SDK with a hardcoded context window table. `OllamaClient` wraps the same SDK pointed at an Ollama Tailscale URL, and fetches the actual context window from Ollama's `/api/show` endpoint.
 
@@ -160,7 +160,7 @@ This table compares napyclaw against its predecessors and related projects acros
 | Data → cloud leakage | ❌ No controls | ⚠️ Depends on config | ✅ Privacy router keeps internal data local | ✅ EgressGuard on all outbound HTTP. Can run fully local (Ollama + local Postgres). Cloud LLM is opt-in, not default. |
 | Supply chain | ❌ 500k LoC unreviewed | ✅ 500 LoC auditable | ⚠️ Adds NVIDIA stack — attack surface grows | ✅ ~2k LoC core, plain Python, no frameworks. Dependencies are well-known libraries (openai, httpx, slack-bolt, asyncpg). |
 | Exposed network port | ❌ 0.0.0.0 default | ✅ No listener | ✅ OpenShell netns isolation | ✅ No listener. comms, egressguard, and searxng containers handle all outbound — bot has no internet access. |
-| Host RCE | ❌ Critical | ✅ Ephemeral containers | ✅ OpenShell (Landlock + seccomp + netns) | ⚠️ No container — process-level only. File tools sandboxed to `workspace_dir` with path traversal checks. |
+| Host RCE | ❌ Critical | ✅ Ephemeral containers | ✅ OpenShell (Landlock + seccomp + netns) | ⚠️ Bot runs in Docker with no internet access. File tools sandboxed to `workspace_dir` with path traversal checks. No Landlock/seccomp — process isolation only. |
 | Cross-agent leakage | ❌ Shared memory | ✅ Isolated sessions | ✅ Per-agent sandboxed environments | ⚠️ Per-group agents with separate history. Private sessions use NullMemory. No OS-level isolation between groups. |
 
 ### What napyclaw does well
@@ -217,7 +217,7 @@ The only current gap is the comms layer (Slack is not self-hostable) — tracked
 
 These are known vulnerabilities with active mitigation plans. See the linked issues for details and progress.
 
-**No process isolation** ([#3](https://github.com/napyclaw/napyclaw/issues/3)). Unlike NanoClaw (Docker) or NemoClaw (Landlock + seccomp), napyclaw runs as a regular Python process. If the process is compromised, the attacker has access to everything the process can see — including the Config object holding all secrets in memory. This is an acceptable tradeoff for a personal tool running on your own tailnet; it would not be acceptable in a shared or multi-tenant environment. First step: Dockerfile with non-root user and read-only filesystem.
+**No syscall isolation** ([#3](https://github.com/napyclaw/napyclaw/issues/3)). Unlike NemoClaw (Landlock + seccomp), the bot runs in a standard Docker container — no seccomp profile, no read-only filesystem, no non-root user. If the process is compromised, the attacker has container-level access including the Config object holding all secrets in memory. This is an acceptable tradeoff for a personal tool running on your own tailnet; it would not be acceptable in a shared or multi-tenant environment. Next step: non-root user, read-only root filesystem, seccomp profile.
 
 **Secrets in memory** ([#4](https://github.com/napyclaw/napyclaw/issues/4)). Infisical keeps secrets out of files, but `Config.from_infisical()` loads them all into a Python dataclass at startup. A memory dump of the napyclaw process would expose every API key. This is inherent to any application that needs to use secrets at runtime. Planned mitigations: on-demand secret fetch with mlock to prevent swap-file leakage, and eventually a delegated auth proxy so napyclaw never holds API keys directly.
 
@@ -339,12 +339,7 @@ groups_dir = "/app/groups"
 
 ##### Secrets (Infisical)
 
-Only credentials go in Infisical. You have two options:
-
-| Option | What it is | Best for |
-|--------|-----------|----------|
-| **Infisical Cloud** | Free tier at infisical.com. Create an account, create a project, add a machine identity. | Simplest setup, works everywhere |
-| **Self-hosted Infisical** | Run Infisical locally via Docker Compose. See [Infisical self-host docs](https://infisical.com/docs/self-hosting/overview). | Full control, no cloud dependency |
+Only credentials go in Infisical. The default `docker-compose.yml` starts a self-hosted Infisical instance — no external account required. If you prefer to use Infisical Cloud, swap the `infisical` service URL in your environment variables.
 
 Either way, you need three environment variables on the machine running napyclaw:
 
