@@ -161,6 +161,7 @@ This table compares napyclaw against its predecessors and related projects acros
 | Supply chain | ❌ 500k LoC unreviewed | ✅ 500 LoC auditable | ⚠️ Adds NVIDIA stack — attack surface grows | ✅ ~2k LoC core, plain Python, no frameworks. Dependencies are well-known libraries (openai, httpx, slack-bolt, asyncpg). |
 | Exposed network port | ❌ 0.0.0.0 default | ✅ No listener | ✅ OpenShell netns isolation | ✅ No listener. comms, egressguard, and searxng containers handle all outbound — bot has no internet access. |
 | Host RCE | ❌ Critical | ✅ Ephemeral containers | ✅ OpenShell (Landlock + seccomp + netns) | ⚠️ Bot runs in Docker with no internet access. File tools sandboxed to `workspace_dir` with path traversal checks. No Landlock/seccomp — process isolation only. |
+| Network reach after compromise | ❌ Full internet from process | ⚠️ Container-scoped, but outbound internet available | ✅ netns isolation blocks direct outbound | ✅ Bot is on `data-net` only — no default gateway to the internet. A compromised process cannot exfiltrate directly; traffic must route through egressguard, comms, or searxng, each with scoped external access. Enforced at the kernel by Docker network namespaces. |
 | Cross-agent leakage | ❌ Shared memory | ✅ Isolated sessions | ✅ Per-agent sandboxed environments | ⚠️ Per-group agents with separate history. Private sessions use NullMemory. No OS-level isolation between groups. |
 
 ### What napyclaw does well
