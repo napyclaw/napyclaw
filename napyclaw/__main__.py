@@ -5,7 +5,6 @@ import sys
 
 from napyclaw.app import GroupContext, NapyClaw
 from napyclaw.channels.base import Channel
-from napyclaw.channels.slack import SlackChannel
 from napyclaw.config import Config, ConfigError
 from napyclaw.db import Database
 from napyclaw.egress import EgressGuard, build_routed_client
@@ -45,7 +44,8 @@ async def main() -> None:
             webhook_host=config.webhook_host,
             webhook_port=config.webhook_port,
         )
-    else:
+    elif config.comms_channel == "slack":
+        from napyclaw.channels.slack import SlackChannel
         if not config.slack_bot_token or not config.slack_app_token:
             raise RuntimeError(
                 "comms_channel = 'slack' requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN secrets."
@@ -53,6 +53,11 @@ async def main() -> None:
         channel = SlackChannel(
             bot_token=config.slack_bot_token,
             app_token=config.slack_app_token,
+        )
+    else:
+        raise RuntimeError(
+            f"Unknown comms_channel value '{config.comms_channel}'. "
+            "Expected 'webchat' or 'slack'."
         )
     shield = ContentShield()
 
