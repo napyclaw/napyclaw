@@ -121,3 +121,43 @@ def test_config_egress_url_defaults(monkeypatch):
         config = Config.from_infisical()
     assert config.egress_url == "http://egressguard:8000"
     assert config.comms_url == "http://comms:8001"
+
+
+def test_config_webchat_defaults(monkeypatch, tmp_path):
+    """Config loads comms_channel, webhook_host, webhook_port from toml."""
+    toml_content = b"""
+[llm]
+default_provider = "openai"
+default_model = "gpt-4o"
+
+[comms]
+channel = "webchat"
+webhook_host = "bot"
+webhook_port = 9000
+
+[db]
+url = "postgresql://napyclaw:napyclaw-local@db:5432/napyclaw"
+
+[app]
+oauth_callback_port = 8765
+workspace_dir = "/tmp/workspace"
+groups_dir = "/tmp/groups"
+"""
+    toml_file = tmp_path / "napyclaw.toml"
+    toml_file.write_bytes(toml_content)
+
+    monkeypatch.setenv("INFISICAL_CLIENT_ID", "")
+    # Patch _load_infisical to return minimal secrets (no Slack required for webchat)
+    from unittest.mock import patch
+    with patch("napyclaw.config._load_infisical", return_value={
+        "OPENAI_API_KEY": "sk-test",
+        "OLLAMA_API_KEY": "ollama-test",
+    }):
+        from napyclaw.config import Config
+        config = Config.load(toml_path=toml_file)
+
+    assert config.comms_channel == "webchat"
+    assert config.webhook_host == "bot"
+    assert config.webhook_port == 9000
+    assert config.slack_bot_token is None
+    assert config.slack_app_token is None
