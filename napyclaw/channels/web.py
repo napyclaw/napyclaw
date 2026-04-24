@@ -36,10 +36,11 @@ class WebChannel(Channel):
 
         # Register webhook URL with comms
         webhook_url = f"http://{self._webhook_host}:{self._webhook_port}/inbound"
-        await self._session.post(
+        async with self._session.post(
             f"{self._comms_url}/register",
             json={"webhook_url": webhook_url},
-        )
+        ):
+            pass
 
     async def disconnect(self) -> None:
         if self._runner:
@@ -51,10 +52,11 @@ class WebChannel(Channel):
 
     async def send(self, group_id: str, text: str) -> None:
         if self._session:
-            await self._session.post(
+            async with self._session.post(
                 f"{self._comms_url}/send",
                 json={"channel": group_id, "text": text},
-            )
+            ):
+                pass
 
     async def set_typing(self, group_id: str, on: bool) -> None:
         # Encode typing state as a sentinel text frame; comms interprets it
@@ -77,6 +79,10 @@ class WebChannel(Channel):
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 channel_type="webchat",
             )
-            await self._handler(msg)
+            try:
+                asyncio.create_task(self._handler(msg))
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("handler raised in _handle_inbound")
 
         return web.json_response({"ok": True})

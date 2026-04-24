@@ -1,6 +1,7 @@
 """Tests for WebChannel — the self-hosted webchat channel implementation."""
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,8 +20,11 @@ class TestWebChannel:
 
     async def test_send_posts_to_comms(self):
         ch = WebChannel(comms_url="http://comms:8001", webhook_host="bot", webhook_port=9000)
-        mock_session = AsyncMock()
-        mock_session.post = AsyncMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=AsyncMock()), __aexit__=AsyncMock(return_value=False)))
+        mock_session = MagicMock()
+        mock_response = AsyncMock()
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_session.post = MagicMock(return_value=mock_response)
         ch._session = mock_session
 
         await ch.send("group-1", "Hello!")
@@ -55,6 +59,8 @@ class TestWebChannel:
                 },
             )
             assert resp.status == 200
+            # Yield control so the create_task coroutine can run
+            await asyncio.sleep(0)
 
         assert len(received) == 1
         msg = received[0]
@@ -67,8 +73,11 @@ class TestWebChannel:
 
     async def test_set_typing_sends_typing_frame(self):
         ch = WebChannel(comms_url="http://comms:8001", webhook_host="bot", webhook_port=9000)
-        mock_session = AsyncMock()
-        mock_session.post = AsyncMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=AsyncMock()), __aexit__=AsyncMock(return_value=False)))
+        mock_session = MagicMock()
+        mock_response = AsyncMock()
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_session.post = MagicMock(return_value=mock_response)
         ch._session = mock_session
 
         await ch.set_typing("grp-1", True)
@@ -77,3 +86,33 @@ class TestWebChannel:
             "http://comms:8001/send",
             json={"channel": "grp-1", "text": "\x00typing:true"},
         )
+
+    async def test_inbound_no_handler(self):
+        """POST to /inbound with no handler registered returns 200 without error."""
+        ch = WebChannel(comms_url="http://comms:8001", webhook_host="bot", webhook_port=9000)
+        # No handler registered
+
+        app = web.Application()
+        app.router.add_post("/inbound", ch._handle_inbound)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/inbound",
+                json={"group_id": "grp-1", "sender_id": "owner", "text": "Hi"},
+            )
+            assert resp.status == 200
+
+    async def test_inbound_malformed_json(self):
+        """POST to /inbound with malformed JSON returns 400."""
+        ch = WebChannel(comms_url="http://comms:8001", webhook_host="bot", webhook_port=9000)
+
+        app = web.Application()
+        app.router.add_post("/inbound", ch._handle_inbound)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/inbound",
+                data=b"not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
