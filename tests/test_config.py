@@ -13,7 +13,7 @@ def _make_infisical_client(secrets: dict) -> MagicMock:
         if name not in secrets:
             raise KeyError(name)
         result = MagicMock()
-        result.secretValue = secrets[name]
+        result.secret_value = secrets[name]
         return result
 
     client.getSecret.side_effect = get_secret
@@ -148,7 +148,6 @@ groups_dir = "/tmp/groups"
 
     monkeypatch.setenv("INFISICAL_CLIENT_ID", "")
     # Patch _load_infisical to return minimal secrets (no Slack required for webchat)
-    from unittest.mock import patch
     with patch("napyclaw.config._load_infisical", return_value={
         "OPENAI_API_KEY": "sk-test",
         "OLLAMA_API_KEY": "ollama-test",
