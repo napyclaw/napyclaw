@@ -87,6 +87,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./napyclaw/migrations/001_thoughts.sql:/docker-entrypoint-initdb.d/001_thoughts.sql
       - ./napyclaw/migrations/002_operational.sql:/docker-entrypoint-initdb.d/002_operational.sql
+      - ./napyclaw/migrations/003_webchat.sql:/docker-entrypoint-initdb.d/003_webchat.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U napyclaw"]
       interval: 5s
