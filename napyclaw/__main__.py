@@ -4,6 +4,7 @@ import signal
 import sys
 
 from napyclaw.app import GroupContext, NapyClaw
+from napyclaw.channels.base import Channel
 from napyclaw.channels.slack import SlackChannel
 from napyclaw.config import Config, ConfigError
 from napyclaw.db import Database
@@ -37,7 +38,22 @@ async def main() -> None:
     await db.connect()
     print(f"  database connected ({config.db_url.split('@')[-1]})")
 
-    channel = SlackChannel(bot_token=config.slack_bot_token, app_token=config.slack_app_token)
+    if config.comms_channel == "webchat":
+        from napyclaw.channels.web import WebChannel
+        channel: Channel = WebChannel(
+            comms_url=config.comms_url,
+            webhook_host=config.webhook_host,
+            webhook_port=config.webhook_port,
+        )
+    else:
+        if not config.slack_bot_token or not config.slack_app_token:
+            raise RuntimeError(
+                "comms_channel = 'slack' requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN secrets."
+            )
+        channel = SlackChannel(
+            bot_token=config.slack_bot_token,
+            app_token=config.slack_app_token,
+        )
     shield = ContentShield()
 
     # --- EgressGuard ---
@@ -172,8 +188,9 @@ async def main() -> None:
 
     # --- Start ---
     await app.start()
-    app.bot_user_id = channel.bot_user_id
-    print(f"  connected to Slack as {channel.bot_user_id}")
+    if config.comms_channel == "slack" and hasattr(channel, "bot_user_id"):
+        app.bot_user_id = channel.bot_user_id
+        print(f"  connected to Slack as {channel.bot_user_id}")
 
     # --- Scheduler ---
     scheduler = Scheduler(
