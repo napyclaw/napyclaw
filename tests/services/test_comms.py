@@ -61,7 +61,7 @@ def test_ws_receive_message_dispatches_to_webhook():
     m._bot_webhook = "http://bot:9000/inbound"
     m._ws_connection = None
 
-    with patch("services.comms.main._post_to_webhook", new_callable=AsyncMock) as mock_post:
+    with patch("services.comms.main._http_post", new_callable=AsyncMock) as mock_post:
         with SyncClient(m.app) as c:
             with c.websocket_connect("/ws") as ws:
                 ws.send_json({

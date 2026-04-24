@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -87,15 +87,6 @@ def _buffer_message(group_id: str, role: str, text: str) -> None:
     if group_id not in _message_buffer:
         _message_buffer[group_id] = deque(maxlen=_BUFFER_SIZE)
     _message_buffer[group_id].append({"role": role, "text": text})
-
-
-async def _post_to_webhook(url: str, payload: dict) -> None:
-    if _http_client is None:
-        return
-    try:
-        await _http_client.post(url, json=payload, timeout=5.0)
-    except Exception:
-        pass
 
 
 async def _http_post(url: str, payload: dict) -> None:
@@ -245,6 +236,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         await ws.send_json({
                             "type": "message",
                             "group_id": group_id,
+                            "role": buffered["role"],
                             "text": buffered["text"],
                             "replayed": True,
                         })
@@ -254,7 +246,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 text = data.get("text", "")
                 _buffer_message(group_id, "user", text)
                 if _bot_webhook:
-                    asyncio.create_task(_post_to_webhook(_bot_webhook, {
+                    asyncio.create_task(_http_post(_bot_webhook, {
                         "group_id": group_id,
                         "sender_id": "owner",
                         "text": text,
@@ -273,14 +265,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        _ws_connection = None
+        if _ws_connection is ws:
+            _ws_connection = None
 
 
 # ---------------------------------------------------------------------------
 # Static files (frontend SPA)
 # ---------------------------------------------------------------------------
 
-import pathlib
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 if _STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
