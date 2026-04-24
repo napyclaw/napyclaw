@@ -1,6 +1,8 @@
 # Webchat Comms Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Spec review rule:** Each task lists the spec sections it covers under **Spec Reference**. Before starting a task, read those sections in `docs/superpowers/specs/2026-04-23-webchat-comms-design.md`. If anything in the task conflicts with or is ambiguous against the spec, re-read the relevant spec sections and follow the spec — do not resolve conflicts by guessing or defaulting to what seems reasonable. If the conflict cannot be resolved from the spec alone, surface it before writing any code.
 
 **Goal:** Replace Slack with a self-hosted WebSocket chat UI served by the `comms` container, preserving the full Channel/GroupContext/agent stack.
 
@@ -31,6 +33,8 @@
 ---
 
 ## Task 1: DB Migration — webchat columns
+
+**Spec Reference:** §4 Data Model Changes — defines the four new columns (`nickname`, `job_title`, `memory_enabled`, `channel_type`), their types, defaults, and the admin DM seed row. §3.1 Container Topology — confirms no new containers or network changes; migration is applied via the existing `docker-entrypoint-initdb.d` mount pattern.
 
 **Files:**
 - Create: `napyclaw/migrations/003_webchat.sql`
@@ -92,6 +96,8 @@ Or `docker compose down -v && docker compose up` to reset.
 ---
 
 ## Task 2: Update db.py for new columns
+
+**Spec Reference:** §4 Data Model Changes — exact column names, types, and defaults for the `GroupContext` table extension. §2.2 Specialist Conversations — `nickname` and `job_title` fields and their lifecycle (agent-set, user-editable). §2.3 Admin DM — `memory_enabled = false` constraint and the `group_id = 'admin'` seed row exclusion from specialist lists.
 
 **Files:**
 - Modify: `napyclaw/db.py:67-114` (save_group_context, load_group_context, _row_to_ctx)
@@ -289,6 +295,8 @@ git commit -m "feat: add nickname, job_title, memory_enabled, channel_type to Gr
 
 ## Task 3: Config — comms_channel, webhook config, optional slack tokens
 
+**Spec Reference:** §3.4 Config — defines the `[comms]` TOML section with `channel`, `webhook_host`, and `webhook_port` keys. §7 What Is Not Changing — confirms Slack support is retained as a fallback (dead code stubs, not removed), so Slack tokens must remain optional not deleted. §3.3 WebChannel — `webhook_host` and `webhook_port` are the values `WebChannel.__init__` receives.
+
 **Files:**
 - Modify: `napyclaw/config.py`
 - Modify: `napyclaw.toml`
@@ -438,6 +446,8 @@ git commit -m "feat: add comms_channel, webhook config to Config; slack tokens n
 ---
 
 ## Task 4: WebChannel implementation
+
+**Spec Reference:** §3.3 WebChannel — full interface contract: `start()` (registers webhook via `POST /register`), `send(group_id, text)` (calls `POST /send`), `stop()` (shuts down listener), inbound normalization to `Message` with `channel_type = "webchat"`. §5.1 User → Bot — the exact inbound payload shape (`group_id`, `sender_id`, `text`) that `comms` POSTs to the bot webhook. §7 What Is Not Changing — the `Channel` abstract interface (`connect`, `disconnect`, `send`, `set_typing`) is unchanged; `WebChannel` must implement all four methods.
 
 **Files:**
 - Create: `napyclaw/channels/web.py`
@@ -645,6 +655,8 @@ git commit -m "feat: add WebChannel — self-hosted webchat channel via aiohttp 
 
 ## Task 5: Seed admin DM and wire memory_enabled in app.py
 
+**Spec Reference:** §2.3 Admin DM — `group_id = "admin"`, `memory_enabled = false`, seeded at bot startup, no vector store writes. §2.2 Specialist Conversations — `memory_enabled = true` default for all specialist contexts; all share the same vector DB pool. §4 Data Model Changes — the `memory_enabled` and `channel_type` fields on `GroupContext` that must be populated when restoring contexts from DB. §5.1 User → Bot — `_sync_specialists()` must be called after `connect()` so comms has the specialist list ready before the first browser connection.
+
 **Files:**
 - Modify: `napyclaw/app.py` (GroupContext dataclass, start(), handle_message(), _save_context())
 
@@ -825,6 +837,8 @@ git commit -m "feat: seed admin DM on startup, respect memory_enabled, sync spec
 
 ## Task 6: Wire WebChannel in `__main__.py`
 
+**Spec Reference:** §3.4 Config — `comms_channel = "webchat"` vs `"slack"` is the branch condition. §3.3 WebChannel — the three constructor arguments (`comms_url`, `webhook_host`, `webhook_port`) come directly from `Config`. §7 What Is Not Changing — Slack path must remain functional; the branch must not break existing Slack mode.
+
 **Files:**
 - Modify: `napyclaw/__main__.py`
 
@@ -896,6 +910,8 @@ git commit -m "feat: wire WebChannel vs SlackChannel based on comms_channel conf
 ---
 
 ## Task 7: Extend comms service — WebSocket, specialists, approval
+
+**Spec Reference:** §3.2 comms Service Changes — complete endpoint table (new and modified), in-memory state requirements (one active WS connection, 50-message buffer per group). §5.1 User → Bot — WebSocket frame format (`type: "message"`, `group_id`, `text`) and the POST to bot webhook. §5.2 Approval Flow — WebSocket approval card push format, four decision values, callback to EgressGuard. §5.3 Reconnection — replay of last 50 messages per `group_id` on reconnect via `type: "hello"` frame. §3.1 Container Topology — port 8001 already published; no new port mapping needed.
 
 **Files:**
 - Modify: `services/comms/main.py`
@@ -1313,6 +1329,8 @@ git commit -m "feat: add WebSocket, /specialists, /approval/respond to comms ser
 ---
 
 ## Task 8: Frontend SPA
+
+**Spec Reference:** §2.1 Layout — sidebar (persistent, independently scrollable from chat pane), chat header (nickname + job title + rename link), input bar (placeholder "Message \<nickname\>..."), Admin DM pinned at bottom with badge. §2.2 Specialist Conversations — new chat modal, nickname/job title display, rename flow. §2.3 Admin DM — approval card with four action buttons, badge cleared on entering admin pane. §5.1 User → Bot — WebSocket frame format sent by browser. §5.2 Approval Flow — approval frame format received from server, decision frame format sent back. §5.3 Reconnection — `type: "hello"` frame on connect/reconnect; exponential backoff (max 30s). §6 Frontend — dark theme colors (`#0f172a`, `#1d4ed8`), no framework, no build step, mobile-responsive hamburger menu on narrow viewports.
 
 **Files:**
 - Create: `services/comms/static/index.html`
