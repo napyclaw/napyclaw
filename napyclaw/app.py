@@ -261,6 +261,9 @@ class NapyClaw:
             model=context.active_client.model,
             is_first_interaction=context.is_first_interaction,
             history=context.agent.history,
+            job_title=getattr(context, 'job_title', None),
+            memory_enabled=getattr(context, 'memory_enabled', True),
+            channel_type=getattr(context, 'channel_type', 'slack'),
         )
 
     def _default_system_prompt(self, ctx: GroupContext) -> str:

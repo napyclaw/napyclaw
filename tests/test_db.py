@@ -240,8 +240,8 @@ async def test_memory_enabled_defaults_true(db):
         is_first_interaction=True,
         history=[],
         job_title=None,
-        memory_enabled=True,
         channel_type="webchat",
+        # memory_enabled omitted — should default to True
     )
     row = await db.load_group_context("g-default")
     assert row["memory_enabled"] is True
