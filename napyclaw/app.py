@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+import aiohttp
 
 from napyclaw.agent import Agent, AgentLoopError
 from napyclaw.channels.base import Channel, Message
@@ -15,6 +18,8 @@ from napyclaw.models.base import LLMClient
 from napyclaw.models.openai_client import LLMUnavailableError
 from napyclaw.shield import ContentShield
 from napyclaw.tools.base import Tool
+
+_log = logging.getLogger(__name__)
 
 _SEARCH_BLOCK = re.compile(
     r"<!-- SEARCH_RESULTS -->.*?<!-- /SEARCH_RESULTS -->",
@@ -119,21 +124,23 @@ class NapyClaw:
         self.channel.register_handler(self.handle_message)
         await self.channel.connect()
 
-        # Seed admin DM (no-op if already exists)
-        await self.db.save_group_context(
-            group_id="admin",
-            default_name="Admin",
-            display_name="Admin",
-            nicknames=[],
-            owner_id="system",
-            provider=self.config.default_provider,
-            model=self.config.default_model,
-            is_first_interaction=False,
-            history=[],
-            job_title=None,
-            memory_enabled=False,
-            channel_type="webchat",
-        )
+        # Seed admin DM only if it doesn't already exist
+        existing_admin = await self.db.load_group_context("admin")
+        if existing_admin is None:
+            await self.db.save_group_context(
+                group_id="admin",
+                default_name="Admin",
+                display_name="Admin",
+                nicknames=[],
+                owner_id="system",
+                provider=self.config.default_provider,
+                model=self.config.default_model,
+                is_first_interaction=False,
+                history=[],
+                job_title=None,
+                memory_enabled=False,
+                channel_type="webchat",
+            )
 
         # Push specialist list to comms for sidebar rendering (webchat only)
         if self.config.comms_channel == "webchat":
@@ -152,15 +159,14 @@ class NapyClaw:
             for s in specialists
         ]
         try:
-            import aiohttp
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.config.comms_url}/specialists-sync",
                     json={"specialists": payload},
                 ):
                     pass
-        except Exception:
-            pass  # best-effort sync
+        except Exception as exc:
+            _log.warning("_sync_specialists failed: %s", exc)
 
     def _matches_trigger(self, text: str, context: GroupContext) -> bool:
         """Check if message text triggers the bot for this group."""
@@ -275,6 +281,7 @@ class NapyClaw:
             else:
                 context.agent.system_prompt = base_prompt
 
+        response: str | None = None
         try:
             await self.channel.set_typing(msg.group_id, True)
             response = await context.agent.run(text, sender_id=msg.sender_id)

@@ -364,9 +364,17 @@ def mock_app(tmp_path):
 
 
 async def test_admin_dm_seeded_on_start(mock_app):
-    """Admin DM GroupContext is created with memory_enabled=False on start."""
+    """Admin DM is created on first start; not overwritten on re-start."""
     await mock_app.start()
     row = await mock_app.db.load_group_context("admin")
     assert row is not None
     assert row["memory_enabled"] is False
     assert row["channel_type"] == "webchat"
+
+    # Simulate that admin DM has accumulated history
+    mock_app.db._store["admin"]["history"] = [{"role": "user", "text": "test"}]
+
+    # Re-start should NOT wipe the history
+    await mock_app.start()
+    row2 = await mock_app.db.load_group_context("admin")
+    assert row2["history"] == [{"role": "user", "text": "test"}]
