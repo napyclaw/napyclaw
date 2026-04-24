@@ -20,8 +20,8 @@ A responsive single-page app served by the `comms` container:
 
 - **Sidebar (left, persistent):** List of specialist conversations. Active specialist highlighted. "+ New Specialist" button at bottom of list. "Admin" DM pinned below a divider at the very bottom, with a red badge when there is a pending approval.
 - **Chat pane (right):** Message history for the selected specialist. **Independently scrollable** — the sidebar does not scroll with the chat. Bot avatar initial on left, user messages right-aligned. Typing indicator (animated dots) while bot is responding.
-- **Chat header:** Specialist nickname + job title. "✏ rename" link opens inline edit for name and nickname.
-- **Input bar:** Text field + send button (↑). Placeholder text says "Message \<nickname\>...".
+- **Chat header:** Specialist display name + job title. "✏ rename" link opens inline edit for `display_name` and the first entry in `nicknames`.
+- **Input bar:** Text field + send button (↑). Placeholder text says "Message \<nicknames[0] or display_name\>...".
 
 ### 2.2 Specialist Conversations
 
@@ -30,9 +30,9 @@ Each specialist is a `GroupContext` row with `channel_type = "webchat"`.
 **New conversation flow:**
 1. Click "+ New Specialist" → optional name field (leave blank to let agent choose).
 2. First message creates the `GroupContext`. Bot introduces itself.
-3. If no nickname was provided, bot asks for one. If user says "choose one," bot picks.
+3. If `nicknames` is empty, bot asks for one. If user says "choose one," bot picks and stores it as `nicknames[0]`.
 4. After approximately 5 messages, bot self-updates `job_title` based on established role.
-5. Name and nickname are editable at any time from the chat header.
+5. `display_name` and `nicknames[0]` are editable at any time from the chat header.
 
 **Memory:** All specialist chats share the same vector DB pool (open-brain). Each `GroupContext` has its own scoped conversation history. Memory writes are enabled by default.
 
@@ -118,13 +118,13 @@ channel = "webchat"  # or "slack"
 
 ## 4. Data Model Changes
 
-`GroupContext` gains three new nullable columns (migration required):
+`GroupContext` gains two new columns (migration required). The existing `nicknames` (JSON text array) already stores aliases — `nicknames[0]` is used as the display nickname in the UI; no separate `nickname` column is added.
 
 | Column | Type | Default | Notes |
 |---|---|---|---|
-| `nickname` | `text` | `null` | Short alias chosen by agent or user |
 | `job_title` | `text` | `null` | One-line role summary, agent-updated |
 | `memory_enabled` | `boolean` | `true` | `false` for Admin DM |
+| `channel_type` | `text` | `'slack'` | `'webchat'` for all new specialists |
 
 Admin DM seed row:
 ```sql

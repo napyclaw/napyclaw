@@ -34,7 +34,7 @@
 
 ## Task 1: DB Migration — webchat columns
 
-**Spec Reference:** §4 Data Model Changes — defines the four new columns (`nickname`, `job_title`, `memory_enabled`, `channel_type`), their types, defaults, and the admin DM seed row. §3.1 Container Topology — confirms no new containers or network changes; migration is applied via the existing `docker-entrypoint-initdb.d` mount pattern.
+**Spec Reference:** §4 Data Model Changes — defines the three new columns (`job_title`, `memory_enabled`, `channel_type`); note that `nicknames` (JSON array) already exists and `nicknames[0]` is used as the display nickname — no separate `nickname` column is added. §3.1 Container Topology — confirms no new containers or network changes; migration is applied via the existing `docker-entrypoint-initdb.d` mount pattern.
 
 **Files:**
 - Create: `napyclaw/migrations/003_webchat.sql`
@@ -48,10 +48,9 @@
 -- Requires: 002_operational.sql already applied.
 
 ALTER TABLE group_contexts
-    ADD COLUMN IF NOT EXISTS nickname      TEXT,
-    ADD COLUMN IF NOT EXISTS job_title     TEXT,
+    ADD COLUMN IF NOT EXISTS job_title      TEXT,
     ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    ADD COLUMN IF NOT EXISTS channel_type  TEXT NOT NULL DEFAULT 'slack';
+    ADD COLUMN IF NOT EXISTS channel_type   TEXT NOT NULL DEFAULT 'slack';
 ```
 
 - [ ] **Step 2: Mount the migration in docker-compose.yml**
@@ -97,7 +96,7 @@ Or `docker compose down -v && docker compose up` to reset.
 
 ## Task 2: Update db.py for new columns
 
-**Spec Reference:** §4 Data Model Changes — exact column names, types, and defaults for the `GroupContext` table extension. §2.2 Specialist Conversations — `nickname` and `job_title` fields and their lifecycle (agent-set, user-editable). §2.3 Admin DM — `memory_enabled = false` constraint and the `group_id = 'admin'` seed row exclusion from specialist lists.
+**Spec Reference:** §4 Data Model Changes — exact column names, types, and defaults (`job_title`, `memory_enabled`, `channel_type`). `nicknames` already exists; `nicknames[0]` is the display nickname — no new `nickname` column. §2.2 Specialist Conversations — `job_title` lifecycle (agent-set after ~5 messages, user-editable). §2.3 Admin DM — `memory_enabled = false` constraint and exclusion of `group_id = 'admin'` from specialist lists.
 
 **Files:**
 - Modify: `napyclaw/db.py:67-114` (save_group_context, load_group_context, _row_to_ctx)
@@ -114,20 +113,19 @@ async def test_save_and_load_webchat_columns(db):
         group_id="g-web",
         default_name="Rex",
         display_name="Rex",
-        nicknames=[],
+        nicknames=["Rex"],
         owner_id="owner",
         provider="openai",
         model="gpt-4o",
         is_first_interaction=True,
         history=[],
-        nickname="Rex",
         job_title="Stats Researcher",
         memory_enabled=True,
         channel_type="webchat",
     )
     row = await db.load_group_context("g-web")
     assert row is not None
-    assert row["nickname"] == "Rex"
+    assert row["nicknames"] == ["Rex"]
     assert row["job_title"] == "Stats Researcher"
     assert row["memory_enabled"] is True
     assert row["channel_type"] == "webchat"
@@ -145,7 +143,6 @@ async def test_memory_enabled_defaults_true(db):
         model="gpt-4o",
         is_first_interaction=True,
         history=[],
-        nickname=None,
         job_title=None,
         memory_enabled=True,
         channel_type="webchat",
@@ -158,14 +155,14 @@ async def test_load_webchat_specialists(db):
     """load_webchat_specialists returns only webchat rows, not admin."""
     await db.save_group_context(
         group_id="spec-1", default_name="Rex", display_name="Rex",
-        nicknames=[], owner_id="owner", provider="openai", model="gpt-4o",
-        is_first_interaction=True, history=[], nickname="Rex",
+        nicknames=["Rex"], owner_id="owner", provider="openai", model="gpt-4o",
+        is_first_interaction=True, history=[],
         job_title="Stats Researcher", memory_enabled=True, channel_type="webchat",
     )
     await db.save_group_context(
         group_id="admin", default_name="Admin", display_name="Admin",
         nicknames=[], owner_id="system", provider="openai", model="gpt-4o",
-        is_first_interaction=True, history=[], nickname=None,
+        is_first_interaction=True, history=[],
         job_title=None, memory_enabled=False, channel_type="webchat",
     )
     specialists = await db.load_webchat_specialists()
@@ -180,7 +177,7 @@ async def test_load_webchat_specialists(db):
 pytest tests/test_db.py::test_save_and_load_webchat_columns tests/test_db.py::test_load_webchat_specialists -v
 ```
 
-Expected: FAIL — `save_group_context() got unexpected keyword argument 'nickname'`
+Expected: FAIL — `save_group_context() got unexpected keyword argument 'job_title'`
 
 - [ ] **Step 3: Update `_row_to_ctx` in `napyclaw/db.py`**
 
@@ -198,7 +195,6 @@ def _row_to_ctx(row) -> dict:
         "model": row["model"],
         "is_first_interaction": bool(row["is_first_interaction"]),
         "history": json.loads(row["history"]),
-        "nickname": row["nickname"],
         "job_title": row["job_title"],
         "memory_enabled": bool(row["memory_enabled"]) if row["memory_enabled"] is not None else True,
         "channel_type": row["channel_type"] or "slack",
@@ -221,7 +217,6 @@ async def save_group_context(
     model: str,
     is_first_interaction: bool,
     history: list[dict],
-    nickname: str | None = None,
     job_title: str | None = None,
     memory_enabled: bool = True,
     channel_type: str = "slack",
@@ -231,8 +226,8 @@ async def save_group_context(
         INSERT INTO group_contexts
             (group_id, default_name, display_name, nicknames, owner_id,
              provider, model, is_first_interaction, history,
-             nickname, job_title, memory_enabled, channel_type)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             job_title, memory_enabled, channel_type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (group_id) DO UPDATE SET
             default_name         = EXCLUDED.default_name,
             display_name         = EXCLUDED.display_name,
@@ -242,7 +237,6 @@ async def save_group_context(
             model                = EXCLUDED.model,
             is_first_interaction = EXCLUDED.is_first_interaction,
             history              = EXCLUDED.history,
-            nickname             = EXCLUDED.nickname,
             job_title            = EXCLUDED.job_title,
             memory_enabled       = EXCLUDED.memory_enabled,
             channel_type         = EXCLUDED.channel_type
@@ -256,7 +250,6 @@ async def save_group_context(
         model,
         is_first_interaction,
         json.dumps(history),
-        nickname,
         job_title,
         memory_enabled,
         channel_type,
@@ -288,7 +281,7 @@ Expected: all pass including the three new tests.
 
 ```bash
 git add napyclaw/db.py tests/test_db.py
-git commit -m "feat: add nickname, job_title, memory_enabled, channel_type to GroupContext DB"
+git commit -m "feat: add job_title, memory_enabled, channel_type to GroupContext DB"
 ```
 
 ---
@@ -699,6 +692,7 @@ class GroupContext:
     active_client: LLMClient
     is_first_interaction: bool
     agent: Agent
+    job_title: str | None = None
     memory_enabled: bool = True
     channel_type: str = "slack"
 ```
@@ -719,7 +713,6 @@ In `NapyClaw.start()`, after `await self.channel.connect()`, add:
             model=self.config.default_model,
             is_first_interaction=False,
             history=[],
-            nickname=None,
             job_title=None,
             memory_enabled=False,
             channel_type="webchat",
@@ -740,7 +733,7 @@ Add the `_sync_specialists` method to `NapyClaw`:
             {
                 "group_id": s["group_id"],
                 "display_name": s["display_name"],
-                "nickname": s["nickname"],
+                "nicknames": s["nicknames"],
                 "job_title": s["job_title"],
             }
             for s in specialists
@@ -774,8 +767,7 @@ Find where GroupContext history / memory is persisted after agent runs (look for
             model=ctx.active_client.model,
             is_first_interaction=False,
             history=ctx.agent.history,
-            nickname=getattr(ctx, "nickname", None),
-            job_title=getattr(ctx, "job_title", None),
+            job_title=ctx.job_title,
             memory_enabled=ctx.memory_enabled,
             channel_type=ctx.channel_type,
         )
@@ -813,6 +805,7 @@ In the loop that restores contexts from DB:
                     history=row["history"],
                     injection_guard=self._injection_guard,
                 ),
+                job_title=row.get("job_title"),
                 memory_enabled=row.get("memory_enabled", True),
                 channel_type=row.get("channel_type", "slack"),
             )
@@ -976,7 +969,7 @@ async def test_specialists_sync_and_get(client):
     """POST /specialists-sync stores list; GET /specialists returns it."""
     c, _ = client
     payload = {"specialists": [
-        {"group_id": "g1", "display_name": "Rex", "nickname": "Rex", "job_title": "Stats"},
+        {"group_id": "g1", "display_name": "Rex", "nicknames": ["Rex"], "job_title": "Stats"},
     ]}
     resp = await c.post("/specialists-sync", json=payload)
     assert resp.status_code == 200
@@ -1565,7 +1558,7 @@ mkdir -p services/comms/static
       <span id="chat-role"></span>
       <button id="rename-btn" onclick="openRename()" style="display:none">✏ rename</button>
       <form id="rename-form" onsubmit="submitRename(event)">
-        <input id="rename-input" placeholder="New nickname" maxlength="30">
+        <input id="rename-input" placeholder="New display name / nickname" maxlength="30">
         <button type="submit">Save</button>
       </form>
     </div>
@@ -1651,7 +1644,7 @@ function renderSidebar() {
     div.className = 'specialist-item' + (s.group_id === currentGroup ? ' active' : '');
     div.onclick = () => selectGroup(s.group_id);
     div.innerHTML = `
-      <div class="name">${esc(s.nickname || s.display_name)}</div>
+      <div class="name">${esc((s.nicknames && s.nicknames[0]) || s.display_name)}</div>
       <div class="role">${esc(s.job_title || '')}</div>`;
     list.appendChild(div);
   });
@@ -1664,9 +1657,9 @@ function selectGroup(groupId) {
   renderSidebar();
 
   const spec = specialists.find(s => s.group_id === groupId)
-    || (groupId === 'admin' ? { display_name: 'Admin', nickname: 'Admin', job_title: 'System' } : null);
+    || (groupId === 'admin' ? { display_name: 'Admin', nicknames: ['Admin'], job_title: 'System' } : null);
 
-  const nick = spec ? (spec.nickname || spec.display_name) : groupId;
+  const nick = spec ? ((spec.nicknames && spec.nicknames[0]) || spec.display_name) : groupId;
   const role = spec ? (spec.job_title || '') : '';
 
   document.getElementById('chat-title').textContent = nick;
@@ -1825,7 +1818,7 @@ function closeModal() { document.getElementById('modal-overlay').classList.remov
 function createSpecialist() {
   const name = document.getElementById('specialist-name-input').value.trim() || '';
   const groupId = 'g-' + Date.now();
-  specialists.push({ group_id: groupId, display_name: name || 'New Specialist', nickname: name || null, job_title: null });
+  specialists.push({ group_id: groupId, display_name: name || 'New Specialist', nicknames: name ? [name] : [], job_title: null });
   renderSidebar();
   selectGroup(groupId);
   closeModal();
@@ -1856,7 +1849,7 @@ function submitRename(e) {
   const newNick = document.getElementById('rename-input').value.trim();
   if (newNick && currentGroup) {
     const spec = specialists.find(s => s.group_id === currentGroup);
-    if (spec) { spec.nickname = newNick; }
+    if (spec) { spec.nicknames = [newNick, ...(spec.nicknames || []).slice(1)]; }
     document.getElementById('chat-title').textContent = newNick;
     renderSidebar();
   }
