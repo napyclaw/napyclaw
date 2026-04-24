@@ -75,13 +75,17 @@ class Database:
         model: str,
         is_first_interaction: bool,
         history: list[dict],
+        job_title: str | None = None,
+        memory_enabled: bool = True,
+        channel_type: str = "slack",
     ) -> None:
         await self.pool.execute(
             """
             INSERT INTO group_contexts
                 (group_id, default_name, display_name, nicknames, owner_id,
-                 provider, model, is_first_interaction, history)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 provider, model, is_first_interaction, history,
+                 job_title, memory_enabled, channel_type)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (group_id) DO UPDATE SET
                 default_name         = EXCLUDED.default_name,
                 display_name         = EXCLUDED.display_name,
@@ -90,7 +94,10 @@ class Database:
                 provider             = EXCLUDED.provider,
                 model                = EXCLUDED.model,
                 is_first_interaction = EXCLUDED.is_first_interaction,
-                history              = EXCLUDED.history
+                history              = EXCLUDED.history,
+                job_title            = EXCLUDED.job_title,
+                memory_enabled       = EXCLUDED.memory_enabled,
+                channel_type         = EXCLUDED.channel_type
             """,
             group_id,
             default_name,
@@ -101,6 +108,9 @@ class Database:
             model,
             is_first_interaction,
             json.dumps(history),
+            job_title,
+            memory_enabled,
+            channel_type,
         )
 
     async def load_group_context(self, group_id: str) -> dict | None:
@@ -111,6 +121,13 @@ class Database:
 
     async def load_all_group_contexts(self) -> list[dict]:
         rows = await self.pool.fetch("SELECT * FROM group_contexts")
+        return [_row_to_ctx(row) for row in rows]
+
+    async def load_webchat_specialists(self) -> list[dict]:
+        """Return webchat GroupContexts excluding the admin DM row."""
+        rows = await self.pool.fetch(
+            "SELECT * FROM group_contexts WHERE channel_type = 'webchat' AND group_id != 'admin'"
+        )
         return [_row_to_ctx(row) for row in rows]
 
     async def save_scheduled_task(self, task: ScheduledTask) -> None:
@@ -216,6 +233,9 @@ def _row_to_ctx(row) -> dict:
         "model": row["model"],
         "is_first_interaction": bool(row["is_first_interaction"]),
         "history": json.loads(row["history"]),
+        "job_title": row["job_title"],
+        "memory_enabled": bool(row["memory_enabled"]) if row["memory_enabled"] is not None else True,
+        "channel_type": row["channel_type"] or "slack",
     }
 
 

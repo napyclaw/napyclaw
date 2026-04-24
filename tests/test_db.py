@@ -201,3 +201,67 @@ async def test_log_shield_detection(db: Database):
         detection_types=["api_key"],
         timestamp="2026-03-25T12:00:00Z",
     )
+
+
+async def test_save_and_load_webchat_columns(db):
+    """New columns round-trip correctly."""
+    await db.save_group_context(
+        group_id="g-web",
+        default_name="Rex",
+        display_name="Rex",
+        nicknames=["Rex"],
+        owner_id="owner",
+        provider="openai",
+        model="gpt-4o",
+        is_first_interaction=True,
+        history=[],
+        job_title="Stats Researcher",
+        memory_enabled=True,
+        channel_type="webchat",
+    )
+    row = await db.load_group_context("g-web")
+    assert row is not None
+    assert row["nicknames"] == ["Rex"]
+    assert row["job_title"] == "Stats Researcher"
+    assert row["memory_enabled"] is True
+    assert row["channel_type"] == "webchat"
+
+
+async def test_memory_enabled_defaults_true(db):
+    """memory_enabled=True is the default when not specified explicitly."""
+    await db.save_group_context(
+        group_id="g-default",
+        default_name="Cal",
+        display_name="Cal",
+        nicknames=[],
+        owner_id="owner",
+        provider="openai",
+        model="gpt-4o",
+        is_first_interaction=True,
+        history=[],
+        job_title=None,
+        memory_enabled=True,
+        channel_type="webchat",
+    )
+    row = await db.load_group_context("g-default")
+    assert row["memory_enabled"] is True
+
+
+async def test_load_webchat_specialists(db):
+    """load_webchat_specialists returns only webchat rows, not admin."""
+    await db.save_group_context(
+        group_id="spec-1", default_name="Rex", display_name="Rex",
+        nicknames=["Rex"], owner_id="owner", provider="openai", model="gpt-4o",
+        is_first_interaction=True, history=[],
+        job_title="Stats Researcher", memory_enabled=True, channel_type="webchat",
+    )
+    await db.save_group_context(
+        group_id="admin", default_name="Admin", display_name="Admin",
+        nicknames=[], owner_id="system", provider="openai", model="gpt-4o",
+        is_first_interaction=True, history=[],
+        job_title=None, memory_enabled=False, channel_type="webchat",
+    )
+    specialists = await db.load_webchat_specialists()
+    ids = [s["group_id"] for s in specialists]
+    assert "spec-1" in ids
+    assert "admin" not in ids
