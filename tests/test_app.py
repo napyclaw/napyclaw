@@ -311,3 +311,62 @@ def test_build_routed_client_is_imported_in_main():
     """Verify build_routed_client is importable from __main__ context."""
     import napyclaw.__main__ as main_module
     assert hasattr(main_module, "build_routed_client")
+
+
+# ---------------------------------------------------------------------------
+# Admin DM seeding
+# ---------------------------------------------------------------------------
+
+
+class _FakeDB:
+    """Minimal in-memory DB stub for start() tests (no Postgres required)."""
+
+    def __init__(self):
+        self._store: dict[str, dict] = {}
+
+    async def load_all_group_contexts(self) -> list[dict]:
+        return []
+
+    async def save_group_context(self, group_id: str, **kwargs) -> None:
+        self._store[group_id] = {"group_id": group_id, **kwargs}
+
+    async def load_group_context(self, group_id: str) -> dict | None:
+        return self._store.get(group_id)
+
+    async def load_webchat_specialists(self) -> list[dict]:
+        return []
+
+
+@pytest.fixture
+def mock_app(tmp_path):
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+    config.default_provider = "ollama"
+    config.default_model = "llama3.3:latest"
+    config.comms_channel = "webchat"
+    config.comms_url = "http://comms:8001"
+
+    channel = AsyncMock()
+    db = _FakeDB()
+
+    mock_client = MagicMock()
+    mock_client.provider = "ollama"
+    mock_client.model = "llama3.3:latest"
+
+    app = NapyClaw(
+        config=config,
+        db=db,
+        channel=channel,
+        build_client=lambda p, m: mock_client,
+    )
+    return app
+
+
+async def test_admin_dm_seeded_on_start(mock_app):
+    """Admin DM GroupContext is created with memory_enabled=False on start."""
+    await mock_app.start()
+    row = await mock_app.db.load_group_context("admin")
+    assert row is not None
+    assert row["memory_enabled"] is False
+    assert row["channel_type"] == "webchat"

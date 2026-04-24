@@ -36,6 +36,9 @@ class GroupContext:
     active_client: LLMClient
     is_first_interaction: bool
     agent: Agent
+    job_title: str | None = None
+    memory_enabled: bool = True
+    channel_type: str = "slack"
 
 
 class GroupQueue:
@@ -104,6 +107,9 @@ class NapyClaw:
                     history=row["history"],
                     injection_guard=self._injection_guard,
                 ),
+                job_title=row.get("job_title"),
+                memory_enabled=row.get("memory_enabled", True),
+                channel_type=row.get("channel_type", "slack"),
             )
             ctx.agent.tools = self._build_tools(ctx)
             ctx.agent.system_prompt = self._build_system_prompt(ctx)
@@ -112,6 +118,49 @@ class NapyClaw:
         # Register message handler and connect
         self.channel.register_handler(self.handle_message)
         await self.channel.connect()
+
+        # Seed admin DM (no-op if already exists)
+        await self.db.save_group_context(
+            group_id="admin",
+            default_name="Admin",
+            display_name="Admin",
+            nicknames=[],
+            owner_id="system",
+            provider=self.config.default_provider,
+            model=self.config.default_model,
+            is_first_interaction=False,
+            history=[],
+            job_title=None,
+            memory_enabled=False,
+            channel_type="webchat",
+        )
+
+        # Push specialist list to comms for sidebar rendering (webchat only)
+        if self.config.comms_channel == "webchat":
+            await self._sync_specialists()
+
+    async def _sync_specialists(self) -> None:
+        """Push current webchat specialist list to comms for sidebar rendering."""
+        specialists = await self.db.load_webchat_specialists()
+        payload = [
+            {
+                "group_id": s["group_id"],
+                "display_name": s["display_name"],
+                "nicknames": s["nicknames"],
+                "job_title": s["job_title"],
+            }
+            for s in specialists
+        ]
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.config.comms_url}/specialists-sync",
+                    json={"specialists": payload},
+                ):
+                    pass
+        except Exception:
+            pass  # best-effort sync
 
     def _matches_trigger(self, text: str, context: GroupContext) -> bool:
         """Check if message text triggers the bot for this group."""
@@ -217,7 +266,7 @@ class NapyClaw:
     async def _run_agent(self, context: GroupContext, msg: Message, text: str) -> None:
         """Execute agent and send response. Runs inside GroupQueue lock."""
         # Inject relevant memories into system prompt for this turn
-        if self._memory:
+        if context.memory_enabled and self._memory:
             memories = await self._memory.search(text, context.group_id)
             base_prompt = self._build_system_prompt(context)
             if memories:
@@ -241,7 +290,7 @@ class NapyClaw:
             await self.channel.set_typing(msg.group_id, False)
 
         # Capture exchange to memory — strip raw search results, keep synthesis
-        if self._memory and response:
+        if context.memory_enabled and self._memory and response:
             await self._memory.capture(
                 f"User: {text}\nAssistant: {_strip_search_results(response)}",
                 group_id=context.group_id,
@@ -261,9 +310,9 @@ class NapyClaw:
             model=context.active_client.model,
             is_first_interaction=context.is_first_interaction,
             history=context.agent.history,
-            job_title=getattr(context, 'job_title', None),
-            memory_enabled=getattr(context, 'memory_enabled', True),
-            channel_type=getattr(context, 'channel_type', 'slack'),
+            job_title=context.job_title,
+            memory_enabled=context.memory_enabled,
+            channel_type=context.channel_type,
         )
 
     def _default_system_prompt(self, ctx: GroupContext) -> str:
