@@ -385,8 +385,9 @@ function renderMessages(groupId) {
 
 function buildBubble(role, text) {
   const wrap = document.createElement('div');
-  wrap.className = `msg ${role}`;
-  const initial = role === 'user' ? 'Y' : (currentGroup ? (currentGroup[0] || 'A').toUpperCase() : 'A');
+  const safeRole = (role === 'user' || role === 'assistant') ? role : 'assistant';
+  wrap.className = `msg ${safeRole}`;
+  const initial = safeRole === 'user' ? 'Y' : (currentGroup ? (currentGroup[0] || 'A').toUpperCase() : 'A');
   wrap.innerHTML = `
     <div class="avatar">${initial}</div>
     <div class="bubble">${esc(text)}</div>`;
@@ -410,6 +411,7 @@ function buildApprovalCard(data) {
 }
 
 async function respond(token, decision, card) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'approval', token, decision }));
   card.innerHTML = `<div style="color:var(--muted);font-size:12px">Decision sent: ${decision.replace('_',' ')}</div>`;
   pendingApprovals = Math.max(0, pendingApprovals - 1);
@@ -481,14 +483,14 @@ function createSpecialist() {
   renderSidebar();
   selectGroup(groupId);
   closeModal();
+  const firstMsg = name ? `Hi, I'd like to work with you as my ${name}.` : `Hi! What would you like to be called?`;
   if (ws && ws.readyState === WebSocket.OPEN) {
-    const firstMsg = name ? `Hi, I'd like to work with you as my ${name}.` : `Hi! What would you like to be called?`;
-    ws.send(JSON.stringify({
-      type: 'message',
-      group_id: groupId,
-      text: firstMsg,
-    }));
+    ws.send(JSON.stringify({ type: 'message', group_id: groupId, text: firstMsg }));
     appendMessage(groupId, 'user', firstMsg);
+    scrollToBottom();
+  } else {
+    // WS not connected — show message once reconnected via onopen
+    appendMessage(groupId, 'assistant', 'Connecting... please wait a moment and try again.');
     scrollToBottom();
   }
 }
@@ -522,7 +524,7 @@ function scrollToBottom() {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function toggleSidebar() {
