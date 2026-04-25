@@ -36,11 +36,18 @@ class WebChannel(Channel):
 
         # Register webhook URL with comms
         webhook_url = f"http://{self._webhook_host}:{self._webhook_port}/inbound"
-        async with self._session.post(
-            f"{self._comms_url}/register",
-            json={"webhook_url": webhook_url},
-        ):
-            pass
+        try:
+            async with self._session.post(
+                f"{self._comms_url}/register",
+                json={"webhook_url": webhook_url},
+            ):
+                pass
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "WebChannel: failed to register webhook with comms at %s — will retry on reconnect",
+                self._comms_url,
+            )
 
     async def disconnect(self) -> None:
         if self._runner:

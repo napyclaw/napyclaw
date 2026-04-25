@@ -257,6 +257,7 @@ class NapyClaw:
                     config=self.config,
                     injection_guard=self._injection_guard,
                 ),
+                channel_type=msg.channel_type,
             )
             ctx.agent.tools = self._build_tools(ctx)
             ctx.agent.system_prompt = self._build_system_prompt(ctx)

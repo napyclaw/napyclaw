@@ -76,11 +76,12 @@ _pending_approvals: dict[str, str] = {}
 
 async def _push_to_ws(payload: dict) -> None:
     """Push a JSON payload to the active WebSocket connection, if any."""
+    global _ws_connection
     if _ws_connection is not None:
         try:
             await _ws_connection.send_json(payload)
         except Exception:
-            pass
+            _ws_connection = None
 
 
 def _buffer_message(group_id: str, role: str, text: str) -> None:
