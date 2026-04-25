@@ -200,6 +200,7 @@ class Database:
             INSERT INTO task_run_log
                 (id, task_id, ran_at, status, result_snippet, duration_ms)
             VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (id) DO NOTHING
             """,
             id, task_id, ran_at, status, result_snippet, duration_ms,
         )
@@ -217,6 +218,7 @@ class Database:
             INSERT INTO shield_log
                 (id, group_id, sender_id, detection_types, timestamp)
             VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO NOTHING
             """,
             id, group_id, sender_id, json.dumps(detection_types), timestamp,
         )

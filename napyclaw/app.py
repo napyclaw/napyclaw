@@ -232,12 +232,15 @@ class NapyClaw:
             if self.bot_user_id and f"<@{self.bot_user_id}>" in msg.text:
                 should_create = True
 
+            if msg.channel_type == "webchat":
+                should_create = True
+
             if not should_create:
                 return  # No context, no trigger — store only
 
             # Create new group context
-            channel_name = msg.channel_name
-            default_name = channel_name[0].upper() + channel_name[1:] + "_napy"
+            display_name = msg.channel_name if msg.channel_name != msg.group_id else "Specialist"
+            default_name = display_name
 
             client = self._build_client(
                 self.config.default_provider, self.config.default_model
@@ -245,8 +248,8 @@ class NapyClaw:
             ctx = GroupContext(
                 group_id=msg.group_id,
                 default_name=default_name,
-                display_name=default_name,
-                nicknames=[],
+                display_name=display_name,
+                nicknames=[display_name] if display_name != "Specialist" else [],
                 owner_id=msg.sender_id,
                 active_client=client,
                 is_first_interaction=True,
@@ -262,9 +265,11 @@ class NapyClaw:
             ctx.agent.tools = self._build_tools(ctx)
             ctx.agent.system_prompt = self._build_system_prompt(ctx)
             self.contexts[msg.group_id] = ctx
+            if msg.channel_type == "webchat":
+                await self._sync_specialists()
         else:
-            # Existing context — check trigger
-            if not self._matches_trigger(msg.text, ctx):
+            # Existing context — webchat messages are always directed; Slack requires a trigger
+            if msg.channel_type != "webchat" and not self._matches_trigger(msg.text, ctx):
                 return
 
         # Run agent through the group queue

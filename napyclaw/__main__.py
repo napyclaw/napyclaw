@@ -215,7 +215,7 @@ async def main() -> None:
     def _signal_handler():
         stop.set()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _signal_handler)
@@ -223,10 +223,7 @@ async def main() -> None:
             # Windows doesn't support add_signal_handler
             pass
 
-    try:
-        await stop.wait()
-    except KeyboardInterrupt:
-        pass
+    await stop.wait()
 
     # --- Shutdown ---
     print("\nshutting down...")

@@ -359,6 +359,7 @@ Then add these secrets to your Infisical project (environment: `prod`):
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Yes |
 | `SLACK_APP_TOKEN` | `xapp-...` | Yes |
 | `SLACK_OWNER_CHANNEL` | `C01234ABCDE` | Yes — channel ID where egress approval messages are sent |
+| `TS_AUTHKEY` | `tskey-auth-...` | Only if using the Tailscale sidecar for tailnet access |
 | `EXA_API_KEY` | `...` | Only if using Exa search fallback |
 | `TAVILY_API_KEY` | `tvly-...` | Only if using Tavily search fallback |
 | `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Only if overriding `db.url` in napyclaw.toml |
@@ -399,6 +400,11 @@ docker compose up -d db redis infisical
 ```
 
 Open `http://localhost:8888`, create an account, create a project (environment: `prod`), and create a Machine Identity under Access Control. Copy the Client ID, Client Secret, and Project ID into your `.env` file, then bring up the full stack.
+
+> **Warning:** Once Infisical is bootstrapped, never run `docker compose up <service>` without `--no-deps` on a running stack. Without that flag, Docker recreates the full dependency graph — including `db` and `infisical` — wiping all machine identities and secrets. Always restart individual services with:
+> ```bash
+> docker compose up -d --no-deps <service>
+> ```
 
 This starts PostgreSQL on port 5432 with the credentials from `docker-compose.yml`. Set `DB_URL` in Infisical to match:
 

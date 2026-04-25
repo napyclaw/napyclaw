@@ -448,10 +448,15 @@ function removeTypingIndicator() {
 
 // ---- Send ----
 
+let _sending = false;
 function sendMessage() {
+  if (_sending) return;
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text || !currentGroup || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  _sending = true;
+  setTimeout(() => { _sending = false; }, 300);
 
   appendMessage(currentGroup, 'user', text);
   ws.send(JSON.stringify({ type: 'message', group_id: currentGroup, text }));
@@ -461,7 +466,7 @@ function sendMessage() {
 }
 
 function onKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); sendMessage(); return; }
   // Auto-resize textarea
   const t = e.target;
   setTimeout(() => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }, 0);
@@ -485,7 +490,7 @@ function createSpecialist() {
   closeModal();
   const firstMsg = name ? `Hi, I'd like to work with you as my ${name}.` : `Hi! What would you like to be called?`;
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'message', group_id: groupId, text: firstMsg }));
+    ws.send(JSON.stringify({ type: 'message', group_id: groupId, display_name: name || 'New Specialist', text: firstMsg }));
     appendMessage(groupId, 'user', firstMsg);
     scrollToBottom();
   } else {

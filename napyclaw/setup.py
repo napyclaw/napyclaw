@@ -48,6 +48,10 @@ def run() -> None:
         with open(_TOML_PATH, "rb") as f:
             existing = tomllib.load(f)
         print(f"Found existing {_TOML_PATH} — values shown as defaults.")
+        answer = _ask("Overwrite existing config? (yes to proceed)", "no")
+        if answer.lower() not in ("yes", "y"):
+            print("Aborted — existing config unchanged.")
+            sys.exit(0)
 
     llm = existing.get("llm", {})
     db = existing.get("db", {})

@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -e .
 RUN python -m spacy download en_core_web_lg
 
 # Copy source
+COPY napyclaw.toml .
 COPY napyclaw/ napyclaw/
 
 CMD ["python", "-m", "napyclaw"]

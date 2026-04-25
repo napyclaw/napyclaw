@@ -96,6 +96,39 @@ Conflict. The container name "/napyclaw-db-1" is already in use.
 
 ---
 
+---
+
+## 8. `docker compose up <service>` without `--no-deps` recreates dependent containers
+
+**Problem:** Running `docker compose up -d comms-tailscale` (without `--no-deps`) caused Docker to recreate `db`, `redis`, and `infisical` because they are listed as dependencies. Recreating the Infisical container wiped its database state, invalidating all machine identity credentials. Every container that talks to Infisical then failed with "Invalid credentials" and had to be re-bootstrapped.
+
+**Root cause:** `docker compose up` without `--no-deps` recreates the full dependency graph if any dependent image has changed. When `db` is recreated, Infisical loses all stored state (machine identities, projects, secrets).
+
+**Fix:** Always use `--no-deps` when restarting a single service in a running stack:
+```bash
+docker compose up -d --no-deps <service>
+```
+
+**TODO:** Add a warning to the README: never run `docker compose up` without `--no-deps` on a running stack unless you intend a full teardown/rebuild.
+
+---
+
+## 9. Restarting `comms` orphans the `comms-tailscale` sidecar
+
+**Problem:** After `docker compose up -d --no-deps comms`, the Tailscale IP became unreachable (connection timed out).
+
+**Root cause:** `comms-tailscale` uses `network_mode: service:comms`, meaning it shares comms' network namespace. When comms is recreated, its network namespace is replaced — the sidecar's `tailscaled` process is left attached to the dead old namespace.
+
+**Fix:** Always restart both together:
+```bash
+docker compose up -d --no-deps comms && docker compose up -d --no-deps comms-tailscale
+```
+Added a healthcheck to `comms` and `depends_on: comms: condition: service_healthy` on the sidecar so the dependency is explicit at cold start.
+
+**TODO:** Any service using `network_mode: service:<X>` must be restarted whenever `<X>` is restarted.
+
+---
+
 ## Open TODOs
 
 - [x] Update `.env` comment: `INFISICAL_ENCRYPTION_KEY` must be exactly 32 characters (not hex)
@@ -105,3 +138,4 @@ Conflict. The container name "/napyclaw-db-1" is already in use.
 - [x] Document `admin-net` purpose in docker-compose comments
 - [x] README startup steps: add `docker compose down` before first full `up`
 - [x] Any new service needing secrets: use the Infisical lifespan pattern from `comms/main.py`, not docker-compose env substitution
+- [ ] README: warn never to run `docker compose up` without `--no-deps` on a running stack

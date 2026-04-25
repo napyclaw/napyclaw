@@ -77,9 +77,10 @@ class WebChannel(Channel):
             return web.Response(status=400)
 
         if self._handler:
+            group_id = data.get("group_id", "")
             msg = Message(
-                group_id=data.get("group_id", ""),
-                channel_name=data.get("group_id", ""),
+                group_id=group_id,
+                channel_name=data.get("display_name") or group_id,
                 sender_id=data.get("sender_id", "owner"),
                 sender_name=data.get("sender_id", "owner"),
                 text=data.get("text", ""),

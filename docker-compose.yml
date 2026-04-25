@@ -58,11 +58,18 @@ services:
     networks:
       - comms-net
       - data-net  # needs data-net to reach infisical
+    ports:
+      - "8001:8001"
     environment:
       INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
       INFISICAL_URL: http://infisical:8080
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/specialists')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   searxng:
     image: searxng/searxng:latest
@@ -125,5 +132,32 @@ services:
     ports:
       - "8888:8080"
 
+  # Tailscale sidecar — exposes comms on the tailnet so anyone on your tailnet can reach the webchat UI.
+  # Add TS_AUTHKEY to Infisical (prod env). Generate a key at tailscale.com/settings/keys.
+  # Use an ephemeral key so the tailnet node is cleaned up when the container stops.
+  # Once running, reach the UI at http://<tailscale-ip>:8001
+  comms-tailscale:
+    build: ./services/comms-tailscale
+    restart: unless-stopped
+    network_mode: service:comms  # shares comms network namespace so TS proxies comms traffic
+    environment:
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      INFISICAL_URL: http://infisical:8080
+      TS_STATE_DIR: /var/lib/tailscale
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    depends_on:
+      comms:
+        condition: service_healthy
+      infisical:
+        condition: service_started
+
 volumes:
   pgdata:
+  tailscale-state:

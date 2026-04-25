@@ -245,13 +245,13 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             elif msg_type == "message":
                 group_id = data.get("group_id", "")
                 text = data.get("text", "")
+                display_name = data.get("display_name")
                 _buffer_message(group_id, "user", text)
                 if _bot_webhook:
-                    asyncio.create_task(_http_post(_bot_webhook, {
-                        "group_id": group_id,
-                        "sender_id": "owner",
-                        "text": text,
-                    }))
+                    payload: dict = {"group_id": group_id, "sender_id": "owner", "text": text}
+                    if display_name:
+                        payload["display_name"] = display_name
+                    asyncio.create_task(_http_post(_bot_webhook, payload))
 
             elif msg_type == "approval":
                 token = data.get("token", "")
