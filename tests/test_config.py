@@ -45,10 +45,24 @@ BOOTSTRAP_ENV = {
 }
 
 
+_ISOLATED_TOML = {
+    "llm": {
+        "default_provider": "ollama",
+        "default_model": "llama3.3:latest",
+    },
+    "app": {
+        "oauth_callback_port": "8765",
+        "workspace_dir": "/tmp/napyclaw/workspace",
+        "groups_dir": "/tmp/napyclaw/groups",
+    },
+}
+
+
 def test_config_loads_all_fields():
     mock_client = _make_infisical_client(FULL_SECRETS)
     with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
-         patch.dict("os.environ", BOOTSTRAP_ENV):
+         patch.dict("os.environ", BOOTSTRAP_ENV), \
+         patch("napyclaw.config._load_toml", return_value=_ISOLATED_TOML):
         config = Config.from_infisical()
 
     assert config.openai_api_key == "sk-test"
@@ -60,10 +74,11 @@ def test_config_loads_all_fields():
 
 
 def test_config_max_history_tokens_optional():
-    secrets = {**FULL_SECRETS, "MAX_HISTORY_TOKENS": "4000"}
-    mock_client = _make_infisical_client(secrets)
+    mock_client = _make_infisical_client(FULL_SECRETS)
+    toml_with_tokens = {**_ISOLATED_TOML, "app": {**_ISOLATED_TOML["app"], "max_history_tokens": "4000"}}
     with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
-         patch.dict("os.environ", BOOTSTRAP_ENV):
+         patch.dict("os.environ", BOOTSTRAP_ENV), \
+         patch("napyclaw.config._load_toml", return_value=toml_with_tokens):
         config = Config.from_infisical()
 
     assert config.max_history_tokens == 4000

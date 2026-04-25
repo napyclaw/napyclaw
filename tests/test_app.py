@@ -7,7 +7,6 @@ import pytest
 from napyclaw.agent import Agent
 from napyclaw.app import GroupContext, GroupQueue, NapyClaw
 from napyclaw.channels.base import Message
-from napyclaw.db import Database
 from napyclaw.models.base import ChatResponse
 
 
@@ -133,8 +132,7 @@ class TestTriggerMatching:
 
 class TestNapyClawHandleMessage:
     async def test_triggered_message_invokes_agent(self, tmp_path: Path):
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -183,8 +181,7 @@ class TestNapyClawHandleMessage:
         assert ctx.owner_id == "U001"
 
     async def test_untriggered_message_stored_only(self, tmp_path: Path):
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -215,8 +212,7 @@ class TestNapyClawHandleMessage:
         assert "C001" not in app.contexts
 
     async def test_existing_context_trigger(self, tmp_path: Path):
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -262,8 +258,7 @@ class TestNapyClawHandleMessage:
     async def test_llm_error_sends_error_message(self, tmp_path: Path):
         from napyclaw.models.openai_client import LLMUnavailableError
 
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -336,6 +331,9 @@ class _FakeDB:
     async def load_webchat_specialists(self) -> list[dict]:
         return []
 
+    async def save_message(self, **_) -> None:
+        pass
+
 
 @pytest.fixture
 def mock_app(tmp_path):
@@ -348,6 +346,7 @@ def mock_app(tmp_path):
     config.comms_url = "http://comms:8001"
 
     channel = AsyncMock()
+    channel.register_handler = MagicMock()
     db = _FakeDB()
 
     mock_client = MagicMock()
