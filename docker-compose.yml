@@ -6,8 +6,10 @@ networks:
   search-net:
     driver: bridge
   data-net:
-    internal: true
+    internal: true  # no host routing — port publishing is silently ignored on internal networks
     driver: bridge
+  admin-net:
+    driver: bridge  # non-internal bridge so Infisical can publish its management port
 
 services:
   bot:
@@ -22,6 +24,7 @@ services:
       INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      INFISICAL_URL: http://infisical:8080
       EGRESS_URL: http://egressguard:8000
       COMMS_URL: http://comms:8001
       SEARXNG_URL: http://searxng:8080
@@ -54,9 +57,12 @@ services:
     restart: unless-stopped
     networks:
       - comms-net
+      - data-net  # needs data-net to reach infisical
     environment:
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      INFISICAL_URL: http://infisical:8080
 
   searxng:
     image: searxng/searxng:latest
@@ -94,18 +100,28 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - data-net
+
   infisical:
     image: infisical/infisical:latest
     restart: unless-stopped
     networks:
       - data-net
+      - admin-net  # admin-net allows the 8888:8080 port mapping to work
     environment:
       ENCRYPTION_KEY: ${INFISICAL_ENCRYPTION_KEY}
       AUTH_SECRET: ${INFISICAL_AUTH_SECRET}
       DB_CONNECTION_URI: postgresql://napyclaw:napyclaw-local@db:5432/napyclaw
+      REDIS_URL: redis://redis:6379
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     ports:
       - "8888:8080"
 
