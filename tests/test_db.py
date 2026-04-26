@@ -17,7 +17,7 @@ TEST_DB_URL = os.environ.get(
 )
 
 _TRUNCATE = """
-TRUNCATE messages, group_contexts, scheduled_tasks, task_run_log, shield_log
+TRUNCATE messages, group_contexts, scheduled_tasks, task_run_log, shield_log, specialist_memory
 """
 
 
@@ -265,3 +265,103 @@ async def test_load_webchat_specialists(db):
     ids = [s["group_id"] for s in specialists]
     assert "spec-1" in ids
     assert "admin" not in ids
+
+
+async def test_save_and_load_job_description(db: Database):
+    await db.save_group_context(
+        group_id="g-jd",
+        default_name="Amy",
+        display_name="Amy",
+        nicknames=["Amy"],
+        owner_id="owner",
+        provider="openai",
+        model="gpt-4o",
+        is_first_interaction=True,
+        history=[],
+        job_description="I help with financial forecasting.",
+        verbatim_turns=10,
+        summary_turns=3,
+    )
+    row = await db.load_group_context("g-jd")
+    assert row["job_description"] == "I help with financial forecasting."
+    assert row["verbatim_turns"] == 10
+    assert row["summary_turns"] == 3
+
+
+async def test_job_description_defaults_none(db: Database):
+    await db.save_group_context(
+        group_id="g-nonjd",
+        default_name="Sam",
+        display_name="Sam",
+        nicknames=[],
+        owner_id="owner",
+        provider="openai",
+        model="gpt-4o",
+        is_first_interaction=True,
+        history=[],
+    )
+    row = await db.load_group_context("g-nonjd")
+    assert row["job_description"] is None
+    assert row["verbatim_turns"] == 7
+    assert row["summary_turns"] == 5
+
+
+async def test_save_and_load_specialist_memory(db: Database):
+    entry_id = str(uuid.uuid4())
+    await db.save_specialist_memory(
+        id=entry_id,
+        group_id="g-spec",
+        type="responsibility",
+        content="I own the monthly P&L report.",
+        embedding=None,
+    )
+    entries = await db.load_specialist_memory("g-spec")
+    assert len(entries) == 1
+    assert entries[0]["content"] == "I own the monthly P&L report."
+    assert entries[0]["type"] == "responsibility"
+
+
+async def test_update_specialist_memory(db: Database):
+    entry_id = str(uuid.uuid4())
+    await db.save_specialist_memory(
+        id=entry_id,
+        group_id="g-spec",
+        type="task",
+        content="Original task content.",
+        embedding=None,
+    )
+    await db.update_specialist_memory(entry_id, content="Updated task content.")
+    entries = await db.load_specialist_memory("g-spec")
+    assert entries[0]["content"] == "Updated task content."
+
+
+async def test_delete_specialist_memory(db: Database):
+    entry_id = str(uuid.uuid4())
+    await db.save_specialist_memory(
+        id=entry_id,
+        group_id="g-spec",
+        type="fact",
+        content="Temporary fact.",
+        embedding=None,
+    )
+    await db.delete_specialist_memory(entry_id)
+    entries = await db.load_specialist_memory("g-spec")
+    assert len(entries) == 0
+
+
+async def test_load_specialist_memory_by_type(db: Database):
+    for t, content in [
+        ("responsibility", "I own forecasting."),
+        ("task", "Prepare weekly report."),
+        ("resource", "https://example.com"),
+    ]:
+        await db.save_specialist_memory(
+            id=str(uuid.uuid4()),
+            group_id="g-multi",
+            type=t,
+            content=content,
+            embedding=None,
+        )
+    responsibilities = await db.load_specialist_memory("g-multi", type_filter="responsibility")
+    assert len(responsibilities) == 1
+    assert responsibilities[0]["content"] == "I own forecasting."
