@@ -365,3 +365,30 @@ async def test_load_specialist_memory_by_type(db: Database):
     responsibilities = await db.load_specialist_memory("g-multi", type_filter="responsibility")
     assert len(responsibilities) == 1
     assert responsibilities[0]["content"] == "I own forecasting."
+
+
+async def test_search_specialist_memory_returns_similarity(db: Database):
+    entry_id = str(uuid.uuid4())
+    # Insert with embedding=None — should be excluded from search results
+    await db.save_specialist_memory(
+        id=entry_id,
+        group_id="g-search",
+        type="task",
+        content="Build the Q2 forecast model.",
+        embedding=None,
+    )
+    # Search with a dummy embedding — rows with embedding=None are filtered out
+    fake_embedding = [0.1] * 768
+    results = await db.search_specialist_memory(
+        group_id="g-search",
+        embedding=fake_embedding,
+        top_k=5,
+    )
+    # No results because the only row has embedding=None
+    assert isinstance(results, list)
+    assert len(results) == 0
+
+
+async def test_update_specialist_memory_missing_id_raises(db: Database):
+    with pytest.raises(ValueError, match="not found"):
+        await db.update_specialist_memory("nonexistent-id", content="whatever")

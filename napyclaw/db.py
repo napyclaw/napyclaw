@@ -154,10 +154,12 @@ class Database:
         )
 
     async def update_specialist_memory(self, id: str, content: str) -> None:
-        await self.pool.execute(
+        status = await self.pool.execute(
             "UPDATE specialist_memory SET content = $1, updated_at = now() WHERE id = $2",
             content, id,
         )
+        if status == "UPDATE 0":
+            raise ValueError(f"specialist_memory entry not found: {id}")
 
     async def delete_specialist_memory(self, id: str) -> None:
         await self.pool.execute("DELETE FROM specialist_memory WHERE id = $1", id)
