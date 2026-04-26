@@ -35,7 +35,7 @@
 
 ## Task 1: Migration 004
 
-**Spec Reference:** Section 1 (Data Model)
+**Spec Reference:** §1 Data Model — defines the exact SQL for both changes: `ALTER TABLE group_contexts` adds `job_description TEXT`, `verbatim_turns INTEGER NOT NULL DEFAULT 7`, `summary_turns INTEGER NOT NULL DEFAULT 5`; the new `specialist_memory` table has `id TEXT PRIMARY KEY`, `group_id TEXT`, `type TEXT` with a CHECK constraint on the six allowed values, `content TEXT`, `embedding vector(768)`, and two TIMESTAMPTZ audit columns. Two indexes: a plain btree on `group_id` and an IVFFlat cosine index on `embedding`. Note: no `visibility` column — cross-specialist access control is deferred; `group_id` scoping is the only access mechanism here.
 
 **Files:**
 - Create: `napyclaw/migrations/004_specialist_memory.sql`
@@ -104,7 +104,7 @@ git commit -m "feat: migration 004 — specialist_memory table and history windo
 
 ## Task 2: Database Layer
 
-**Spec Reference:** Section 1 (Data Model), Section 6 (History window configuration)
+**Spec Reference:** §1 Data Model — `save_group_context` must persist the three new columns; `_row_to_ctx` must read them back with fallback defaults (`verbatim_turns=7`, `summary_turns=5`, `job_description=None`). §6 History Window Configuration — `verbatim_turns` and `summary_turns` are stored per-specialist in `group_contexts`, not in a config file; global defaults (7+5) apply only when columns are NULL (existing rows before migration). New `specialist_memory` CRUD: `save_specialist_memory`, `update_specialist_memory`, `delete_specialist_memory`, `load_specialist_memory` (with optional `type_filter`), `search_specialist_memory` (cosine similarity via pgvector, returns rows with similarity score). Note: `search_specialist_memory` uses raw `<=>` operator, not a stored function like `match_thoughts()` — do not create a new SQL function.
 
 **Files:**
 - Modify: `napyclaw/db.py`
@@ -414,7 +414,7 @@ git commit -m "feat: db — specialist_memory CRUD, job_description/verbatim_tur
 
 ## Task 3: PromptBuilder Module
 
-**Spec Reference:** Section 2 (System Prompt Layering), Section 5 (Onboarding Flow), Section 9 (New Module: prompt_builder.py)
+**Spec Reference:** §2 System Prompt Layering — five blocks in strict order: IDENTITY (name, job_title, job_description, owner_name, first-person rule, trust tier rules) → RESPONSIBILITIES (all `responsibility` rows, never truncated) → WORKING CONTEXT (top-k semantic for task/tool/resource/preference/fact) → EPISODIC MEMORY (top-k from `thoughts`) → PRUNED HISTORY (older exchanges). Block 1 must include the onboarding instruction when `job_description` is None: agent collaboratively defines its role before other work. Block 1 must explicitly instruct first-person speech ("I", "my role") — not just imply it. §9 New Module — `PromptBuilder.build()` takes `GroupContext`, `RetrievedMemory`, `owner_name`, `fmt` ("markdown" default, "json" for benchmarking); `RetrievedMemory` has `responsibilities: list[SpecialistMemoryRow]`, `working_context: list[SpecialistMemoryRow]`, `episodic: list[str]`. Markdown renders each block under a `##` heading; JSON renders a flat dict with block-name keys. `app.py` must not know about block internals — only calls `build()`.
 
 **Files:**
 - Create: `napyclaw/prompt_builder.py`
@@ -701,7 +701,7 @@ git commit -m "feat: PromptBuilder module — layered system prompt with markdow
 
 ## Task 4: Specialist Tools
 
-**Spec Reference:** Section 3 (Trust Tiers), Section 4 (Agent Tools)
+**Spec Reference:** §3 Trust Tiers — `responsibility` and `job_description` are ask-first: agent proposes, user confirms in chat before any write. All other types (`task`, `tool`, `resource`, `preference`, `fact`) are write-immediately + notify in Backstage with a 3-turn correction window. The correction window is hardcoded at 3 (not configurable yet). §4 Agent Tools — `set_job_description(description)` writes to `group_contexts.job_description` and updates the live `GroupContext` object; `manage_specialist_memory(action, type, content, entry_id, scope)` where `scope` is always `"specialist"` for now (cross-specialist access deferred); `save_to_memory(content)` writes to `thoughts` and notifies — no ask-first, content is agent-synthesized. Note: existing `SaveToMemoryTool` in `memory_tool.py` must be replaced or superseded by the new one — do not leave two tools with the same `name = "save_to_memory"` registered.
 
 **Files:**
 - Create: `napyclaw/tools/specialist_tools.py`
@@ -1054,7 +1054,7 @@ git commit -m "feat: specialist tools — SetJobDescription, ManageSpecialistMem
 
 ## Task 5: Background Summarizer
 
-**Spec Reference:** Section 6 (Background Summarizer), Section 3 (Trust Tiers — routing logic)
+**Spec Reference:** §6 Background Summarizer — fires after response is sent, non-blocking (`asyncio.create_task`), only when history exceeds `verbatim_turns + summary_turns`. Summarization prompt uses Block 1 + Block 2 context (identity + responsibilities) plus the exchanges being dropped; instructs the LLM to return a JSON array `[{type, content, scope}, ...]` — multiple items per batch is expected (1-5 typically). Each item is routed independently: `responsibility`/`job_description` → `memory_pending_approval` event (ask-first, no immediate DB write); all others → DB write + `memory_queued` event with `window_turns_remaining: 3`. §6 History Window — `should_summarize` fires when `len(history) // 2 > verbatim_turns + summary_turns`; exchanges to summarize are the oldest `summary_turns` exchanges (not the newest). §3 Trust Tiers — correction window is 3 turns, hardcoded. Summarization uses the same LLM client as the specialist — no separate model.
 
 **Files:**
 - Create: `napyclaw/summarizer.py`
@@ -1335,7 +1335,7 @@ git commit -m "feat: background summarizer — prune detection, LLM summarize, t
 
 ## Task 6: Wire app.py
 
-**Spec Reference:** Section 2 (System Prompt Layering), Section 5 (Onboarding Flow), Section 6 (Background Summarizer), Section 10 (Implementation Order)
+**Spec Reference:** §2 System Prompt Layering — `app.py` must call `PromptBuilder.build()` for every turn, passing freshly retrieved memory; the old `_default_system_prompt` method and the inline memory-injection block in `_run_agent` are both replaced. `GroupContext` gains `job_description`, `verbatim_turns`, `summary_turns`, `owner_name` fields. §5 Onboarding Flow — no explicit mode flag; onboarding is triggered purely by `job_description is None` in the prompt. §6 Background Summarizer — `_run_agent` fires the summarizer as a background task after the response is sent, only when `should_summarize()` returns True; the task must not block the response. The notify callable POSTs to `comms /backstage/event` — not a direct WS call. §4 Agent Tools — specialist tools (`SetJobDescriptionTool`, `ManageSpecialistMemoryTool`, `SaveToMemoryTool`) must be registered via `_build_tools`; old `SaveToMemoryTool` from `memory_tool.py` must not also be registered.
 
 **Files:**
 - Modify: `napyclaw/app.py`
@@ -1610,7 +1610,7 @@ git commit -m "feat: wire PromptBuilder and summarizer into app.py, update Group
 
 ## Task 7: User Identity in comms
 
-**Spec Reference:** Section 7 (User Identity)
+**Spec Reference:** §7 User Identity — `comms/main.py` extracts `Tailscale-User-Name` header from inbound requests and parses it: `nate@betterforecasting.com` → `Nate` (first segment before `@`, title-cased). `owner_name` is passed as `sender_name` in the webhook payload to the bot so `GroupContext.owner_name` is populated. It is also exposed via a `/identity` endpoint so the frontend can fetch and display it in the sidebar top-left. Note: when Tailscale header is absent (local dev), `owner_name` should be an empty string — do not hardcode a fallback name.
 
 **Files:**
 - Modify: `services/comms/main.py`
@@ -1748,7 +1748,7 @@ git commit -m "feat: user identity — extract Tailscale-User-Name, display in s
 
 ## Task 8: Backstage WebSocket Events in comms
 
-**Spec Reference:** Section 8 (Backstage Column — WS event types table)
+**Spec Reference:** §8 Backstage Column — WS event types table defines the exact payloads: `context_used` `{group_id, blocks:[{type,count}]}`, `memory_queued` `{group_id, token, type, content, window_turns_remaining}`, `memory_adjusted` `{group_id, token, revised_content}`, `memory_excluded` `{group_id, token}`, `memory_pending_approval` `{group_id, type, content, token}`, `memory_committed` `{group_id, type, content}`, `background_task` `{group_id, event: "summarizer_ran"|"exchanges_pruned"|"window_opened"}`, `tool_call` `{group_id, tool_name, args, result}`. Bot pushes events via POST to `/backstage/event`; comms forwards to the active WS. Frontend sends `memory_adjusted` and `memory_excluded` back over WS; comms forwards to bot webhook. Note: existing egress approval flow (`/notify/approval`, `/approval/respond`) is unchanged — egress approvals migrate to the Backstage sticky area in the UI only (Task 9), not in the backend.
 
 **Files:**
 - Modify: `services/comms/main.py`
@@ -1832,7 +1832,7 @@ git commit -m "feat: comms backstage events — forward bot events to WS, handle
 
 ## Task 9: Backstage Column UI
 
-**Spec Reference:** Section 8 (Backstage Column — layout, interaction model, sticky area, colors), Section 3 (Trust Tiers — Adjust/Exclude behavior), Resolved Decisions (background colors)
+**Spec Reference:** §8 Backstage Column — three-panel layout `[Specialists][Chat][Backstage]`; Backstage has a sticky top area (pending approvals, correction window items, egress approvals) and a scrollable bottom area (per-turn event history). Interaction model: only current turn and focused turn open simultaneously; clicking a chat message bubble expands that turn's Backstage block and auto-scrolls to it, collapsing any other focused turn. §3 Trust Tiers (Correction Window) — queued items in the sticky area show **Adjust** (opens inline edit field inside the Backstage sticky area, no chat interruption; submitted on Enter) and **Exclude** (silent removal). Resolved Decisions — current turn background: same as page background (`var(--bg)`); focused turn background: `#1e3a5f`. Note: egress approvals move to the Backstage sticky area visually but the backend `/notify/approval` and `/approval/respond` endpoints are unchanged — only the frontend rendering changes.
 
 **Files:**
 - Modify: `services/comms/static/index.html`
@@ -2206,7 +2206,7 @@ git commit -m "feat: Backstage column — three-panel layout, sticky approvals, 
 
 ## Task 10: Onboarding System Prompt Language
 
-**Spec Reference:** Section 5 (Onboarding Flow — all 5 steps)
+**Spec Reference:** §5 Onboarding Flow — five steps in order: (1) agent asks open questions, (2) agent proposes first-person summary ("Here is what I understand my role to be"), (3) user confirms → `set_job_description()` called + initial `specialist_memory` entries seeded, (4) agent announces ready for normal work, (5) agent asks for resources — specific questions drawn from `job_description` context first, then the open-ended catch-all. Note: step 5 resource answers are saved via `manage_specialist_memory(add, resource, ...)`. All of this is driven by prompt language in Block 1 — no state machine or explicit mode flag.
 
 This is already handled by `PromptBuilder._build_blocks` in Task 3 — when `job_description` is `None`, `_ONBOARDING_INSTRUCTION` is injected in Block 1. No additional code needed.
 
@@ -2225,7 +2225,7 @@ git commit -m "fix: onboarding prompt copy tweaks"
 
 ## Task 11: Final Integration Test
 
-**Spec Reference:** All sections — validates end-to-end coverage
+**Spec Reference:** All sections — smoke test validates the full flow: onboarding (§5), prompt layering (§2), tools (§4), summarizer (§6), user identity (§7), Backstage UI (§8). Key things to verify: correction window Adjust/Exclude stays in Backstage only (§3), summarizer fires only on prune threshold not every turn (§6), `responsibility` changes surface as pending approval not auto-committed (§3).
 
 - [ ] **Step 1: Run full test suite**
 
