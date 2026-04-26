@@ -54,7 +54,7 @@ class SetJobDescriptionTool(Tool):
             summary_turns=ctx.summary_turns,
         )
         ctx.job_description = description
-        return f"Job description saved."
+        return "Job description saved."
 
 
 class ManageSpecialistMemoryTool(Tool):
@@ -85,6 +85,11 @@ class ManageSpecialistMemoryTool(Tool):
             "entry_id": {
                 "type": "string",
                 "description": "The entry ID to update or delete. Required for update and delete.",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["specialist"],
+                "description": "Memory scope. Always 'specialist' for now.",
             },
         },
         "required": ["action", "type"],

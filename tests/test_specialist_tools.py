@@ -90,6 +90,15 @@ class TestManageSpecialistMemoryTool:
         result = await tool.execute(action="invalid", type="task", content="x")
         assert "error" in result.lower()
 
+    async def test_update_task_calls_db_with_existing_id(self):
+        tool, db, notify = self._make_tool()
+        result = await tool.execute(action="update", type="task", content="Updated forecast.", entry_id="existing-id-123")
+        db.save_specialist_memory.assert_called_once()
+        args = db.save_specialist_memory.call_args[1]
+        assert args["id"] == "existing-id-123"
+        assert args["content"] == "Updated forecast."
+        assert "updated" in result.lower()
+
 
 class TestSaveToMemoryTool:
     def _make_tool(self):
