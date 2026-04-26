@@ -770,7 +770,8 @@ class TestManageSpecialistMemoryTool:
         db.update_specialist_memory = AsyncMock()
         db.delete_specialist_memory = AsyncMock()
         notify = AsyncMock()
-        return ManageSpecialistMemoryTool(db=db, group_id="g-spec", notify=notify), db, notify
+        embed_fn = AsyncMock(return_value=[0.1] * 768)
+        return ManageSpecialistMemoryTool(db=db, group_id="g-spec", notify=notify, embed_fn=embed_fn), db, notify
 
     async def test_add_task_saves_to_db(self):
         tool, db, notify = self._make_tool()
@@ -779,6 +780,7 @@ class TestManageSpecialistMemoryTool:
         args = db.save_specialist_memory.call_args[1]
         assert args["type"] == "task"
         assert args["content"] == "Prepare Q2 forecast."
+        assert args["embedding"] == [0.1] * 768
         assert "saved" in result.lower() or "added" in result.lower()
 
     async def test_add_task_notifies(self):
@@ -940,10 +942,12 @@ class ManageSpecialistMemoryTool(Tool):
         db: Database,
         group_id: str,
         notify: Callable[[dict], Awaitable[None]],
+        embed_fn: Callable[[str], Awaitable[list[float]]],
     ) -> None:
         self._db = db
         self._group_id = group_id
         self._notify = notify
+        self._embed_fn = embed_fn
 
     async def execute(self, **kwargs) -> str:
         action = kwargs.get("action", "")
@@ -975,13 +979,18 @@ class ManageSpecialistMemoryTool(Tool):
                 f"You'll see it in the Backstage panel — please approve or reject it there."
             )
 
+        try:
+            embedding = await self._embed_fn(content)
+        except Exception:
+            embedding = None
+
         new_id = entry_id or str(uuid.uuid4())
         await self._db.save_specialist_memory(
             id=new_id,
             group_id=self._group_id,
             type=entry_type,
             content=content,
-            embedding=None,
+            embedding=embedding,
         )
         await self._notify({
             "type": "memory_queued",
@@ -1101,9 +1110,13 @@ class TestShouldSummarize:
 
 
 class TestSummaryItemRouting:
+    def _make_summarizer(self):
+        embed_fn = AsyncMock(return_value=[0.1] * 768)
+        return Summarizer(client=MagicMock(), notify=AsyncMock(), embed_fn=embed_fn)
+
     async def test_responsibility_routes_to_pending_approval(self):
         notify = AsyncMock()
-        summarizer = Summarizer(client=MagicMock(), notify=notify)
+        summarizer = Summarizer(client=MagicMock(), notify=notify, embed_fn=AsyncMock(return_value=[0.1]*768))
         item = SummaryItem(type="responsibility", content="I own P&L.", scope="specialist")
         await summarizer._route_item(item, group_id="g-spec", db=MagicMock())
         call_args = notify.call_args[0][0]
@@ -1113,18 +1126,29 @@ class TestSummaryItemRouting:
         notify = AsyncMock()
         db = MagicMock()
         db.save_specialist_memory = AsyncMock()
-        summarizer = Summarizer(client=MagicMock(), notify=notify)
+        summarizer = Summarizer(client=MagicMock(), notify=notify, embed_fn=AsyncMock(return_value=[0.1]*768))
         item = SummaryItem(type="task", content="Prepare Q2 forecast.", scope="specialist")
         await summarizer._route_item(item, group_id="g-spec", db=db)
         call_args = notify.call_args[0][0]
         assert call_args["type"] == "memory_queued"
         assert call_args["window_turns_remaining"] == 3
 
+    async def test_task_saves_with_embedding(self):
+        notify = AsyncMock()
+        db = MagicMock()
+        db.save_specialist_memory = AsyncMock()
+        embed_fn = AsyncMock(return_value=[0.1] * 768)
+        summarizer = Summarizer(client=MagicMock(), notify=notify, embed_fn=embed_fn)
+        item = SummaryItem(type="task", content="Prepare Q2 forecast.", scope="specialist")
+        await summarizer._route_item(item, group_id="g-spec", db=db)
+        args = db.save_specialist_memory.call_args[1]
+        assert args["embedding"] == [0.1] * 768
+
     async def test_fact_routes_to_correction_window(self):
         notify = AsyncMock()
         db = MagicMock()
         db.save_specialist_memory = AsyncMock()
-        summarizer = Summarizer(client=MagicMock(), notify=notify)
+        summarizer = Summarizer(client=MagicMock(), notify=notify, embed_fn=AsyncMock(return_value=[0.1]*768))
         item = SummaryItem(type="fact", content="ETL runs at 3am.", scope="specialist")
         await summarizer._route_item(item, group_id="g-spec", db=db)
         call_args = notify.call_args[0][0]
@@ -1224,9 +1248,11 @@ class Summarizer:
         self,
         client: LLMClient,
         notify: Callable[[dict], Awaitable[None]],
+        embed_fn: Callable[[str], Awaitable[list[float]]],
     ) -> None:
         self._client = client
         self._notify = notify
+        self._embed_fn = embed_fn
 
     async def run(
         self,
@@ -1299,12 +1325,16 @@ class Summarizer:
                 "content": item.content,
             })
         else:
+            try:
+                embedding = await self._embed_fn(item.content)
+            except Exception:
+                embedding = None
             await db.save_specialist_memory(
                 id=token,
                 group_id=group_id,
                 type=item.type,
                 content=item.content,
-                embedding=None,
+                embedding=embedding,
             )
             await self._notify({
                 "type": "memory_queued",
@@ -1457,30 +1487,53 @@ async def _run_agent(self, context: GroupContext, msg: Message, text: str) -> No
     episodic: list[str] = []
 
     if context.memory_enabled and self._memory:
-        # Responsibilities always injected — no semantic filter
-        resp_rows = await self.db.load_specialist_memory(
-            context.group_id, type_filter="responsibility"
-        )
-        responsibilities = [
-            SpecialistMemoryRow(id=r["id"], type=r["type"], content=r["content"])
-            for r in resp_rows
-        ]
-        # Working context — semantic search for non-responsibility types
+        # Embed once, reuse for both semantic lookups
         try:
-            wc_rows = await self.db.search_specialist_memory(
-                group_id=context.group_id,
-                embedding=await self._memory._embed(text),
-                top_k=5,
-            )
-            working_context = [
-                SpecialistMemoryRow(id=r["id"], type=r["type"], content=r["content"])
-                for r in wc_rows
-                if r["type"] != "responsibility"
-            ]
+            query_embedding = await self._memory._embed(text)
         except Exception:
-            pass
-        # Episodic thoughts
-        episodic = await self._memory.search(text, context.group_id, top_k=5)
+            query_embedding = None
+
+        # Responsibilities (plain load) + working context + episodic run concurrently
+        async def _load_responsibilities():
+            rows = await self.db.load_specialist_memory(
+                context.group_id, type_filter="responsibility"
+            )
+            return [SpecialistMemoryRow(id=r["id"], type=r["type"], content=r["content"]) for r in rows]
+
+        async def _load_working_context():
+            if not query_embedding:
+                return []
+            try:
+                rows = await self.db.search_specialist_memory(
+                    group_id=context.group_id,
+                    embedding=query_embedding,
+                    top_k=5,
+                )
+                return [
+                    SpecialistMemoryRow(id=r["id"], type=r["type"], content=r["content"])
+                    for r in rows if r["type"] != "responsibility"
+                ]
+            except Exception:
+                return []
+
+        async def _load_episodic():
+            if not query_embedding:
+                return []
+            embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+            try:
+                rows = await self._memory._pool.fetch(
+                    "SELECT content, similarity FROM match_thoughts($1::vector, $2, $3)",
+                    embedding_str, context.group_id, 5,
+                )
+                return [row["content"] for row in rows]
+            except Exception:
+                return []
+
+        responsibilities, working_context, episodic = await asyncio.gather(
+            _load_responsibilities(),
+            _load_working_context(),
+            _load_episodic(),
+        )
 
     retrieved = RetrievedMemory(
         responsibilities=responsibilities,
@@ -1508,7 +1561,11 @@ After the memory capture block (after line 310), add:
             if self._ws_notify:
                 await self._ws_notify(payload)
 
-        summarizer = Summarizer(client=context.active_client, notify=_notify_ws)
+        summarizer = Summarizer(
+            client=context.active_client,
+            notify=_notify_ws,
+            embed_fn=self._memory._embed if self._memory else (lambda t: []),
+        )
         identity_block = self._prompt_builder.build(
             context, RetrievedMemory(), owner_name=context.owner_name
         ).split("## My Responsibilities")[0]
@@ -1543,12 +1600,13 @@ async def _notify_ws(payload: dict) -> None:
     await self._notify_backstage(context.group_id, payload)
 ```
 
-Also wire `notify=_notify_ws` into tool construction. In `_run_agent`, before calling `context.agent.tools = self._build_tools(ctx)`, the tools factory must receive a notify callable. Update `_build_tools` usage so specialist tools receive `_notify_ws`. Since `_build_tools` is a factory passed in at construction time, pass `notify` as a kwarg:
+Also wire `notify=_notify_ws` and `embed_fn` into tool construction. In `_run_agent`, the tools factory must receive both callables. Pass them as kwargs:
 ```python
-ctx.agent.tools = self._build_tools(ctx, notify=_notify_ws)
+embed_fn = self._memory._embed if self._memory else (lambda t: asyncio.coroutine(lambda: [])())
+ctx.agent.tools = self._build_tools(ctx, notify=_notify_ws, embed_fn=embed_fn)
 ```
 
-Update the factory signature in any callers of `NapyClaw` to accept `notify` kwarg on `build_tools`.
+Update the factory signature in any callers of `NapyClaw` to accept `notify` and `embed_fn` kwargs on `build_tools`. Inside the factory, pass `embed_fn` to `ManageSpecialistMemoryTool`.
 
 - [ ] **Step 6: Update save_group_context calls in app.py**
 
