@@ -9,11 +9,13 @@
 
 ### Migration 004
 
-Add `job_description` to `group_contexts`:
+Add columns to `group_contexts`:
 
 ```sql
 ALTER TABLE group_contexts
-    ADD COLUMN IF NOT EXISTS job_description TEXT;
+    ADD COLUMN IF NOT EXISTS job_description  TEXT,
+    ADD COLUMN IF NOT EXISTS verbatim_turns   INTEGER NOT NULL DEFAULT 7,
+    ADD COLUMN IF NOT EXISTS summary_turns    INTEGER NOT NULL DEFAULT 5;
 ```
 
 New `specialist_memory` table:
@@ -171,7 +173,22 @@ Triggered in `_run_agent` **after** the response is sent, only when `_prune_hist
    → after window expires, call save_to_memory()
 ```
 
-Summarization cadence: every ~5-8 turns naturally, matching the pruning threshold. Not every turn.
+### History window configuration
+
+Each specialist has two configurable values stored in `group_contexts`:
+
+| Column | Default | Meaning |
+|--------|---------|---------|
+| `verbatim_turns` | 7 | Turns kept verbatim in the high-attention tail — never summarized |
+| `summary_turns` | 5 | Turns fed to the summarizer before being dropped |
+
+Total buffer = `verbatim_turns + summary_turns` (default 12). When the buffer exceeds this, the oldest `summary_turns` batch is summarized and dropped. The recent `verbatim_turns` are untouched.
+
+Token cap applies alongside turn count — whichever limit is hit first triggers summarization. This handles specialists with long per-message exchanges (e.g. a research specialist pasting large documents) without waiting for turn count.
+
+Global defaults live in config. Per-specialist overrides stored as columns on `group_contexts`. Specialists with wide verbatim context needs (e.g. code review) can set `verbatim_turns = 12`; lightweight specialists can run leaner.
+
+Summarization cadence: triggered when buffer exceeds `verbatim_turns + summary_turns`, not every turn.
 
 ---
 
