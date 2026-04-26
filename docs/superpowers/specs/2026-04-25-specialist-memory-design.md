@@ -162,15 +162,14 @@ Triggered in `_run_agent` **after** the response is sent, only when `_prune_hist
    - The exchanges about to be pruned
    - Instruction: "Summarize what was learned, decided, or established.
      Correct typos and ignore abandoned trains of thought.
-     Return structured output: {type, content, scope}"
-4. LLM returns typed summary
-5. If type is responsibility or job_description:
-   → queue as pending approval, surface in Backstage sticky area
-6. Otherwise:
-   → enter correction window (2-3 turns)
-   → notify in Backstage
-   → if next message contains a correction, revise before storing
-   → after window expires, call save_to_memory()
+     Return a list of structured items: [{type, content, scope}, ...]
+     Each distinct fact, task, resource, or role change is a separate item."
+4. LLM returns a list of typed items — typically 1-5 per summarization batch
+5. Route each item independently by trust tier:
+   - `responsibility` or `job_description` → queue as pending approval in Backstage sticky area
+   - all other types → enter correction window (2-3 turns), notify in Backstage
+6. Each queued item gets its own Adjust / Exclude action in the sticky area
+7. After correction window expires per item, call save_to_memory() for that item
 ```
 
 ### History window configuration
