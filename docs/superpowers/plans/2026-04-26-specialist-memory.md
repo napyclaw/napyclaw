@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Spec review rule:** Each task lists the spec sections it covers under **Spec Reference**. Before starting a task, read those sections in `docs/superpowers/specs/2026-04-25-specialist-memory-design.md`. If anything in the task conflicts with or is ambiguous against the spec, re-read the relevant spec sections and follow the spec — do not resolve conflicts by guessing or defaulting to what seems reasonable. If the conflict cannot be resolved from the spec alone, surface it before writing any code.
+
 **Goal:** Add structured specialist memory, collaborative onboarding, a layered system prompt builder, background summarization, user identity extraction, and a three-panel Backstage UI to napyclaw.
 
 **Architecture:** A new `specialist_memory` table holds typed per-specialist facts (responsibility/task/tool/resource/preference/fact). A `PromptBuilder` module assembles layered system prompts from identity, responsibilities, semantic working context, and episodic thoughts. A background summarizer fires after each pruning event to capture what's leaving the verbatim window into `thoughts`. The webchat UI gains a third Backstage column showing live context, memory activity, and pending approvals.
@@ -32,6 +34,8 @@
 ---
 
 ## Task 1: Migration 004
+
+**Spec Reference:** Section 1 (Data Model)
 
 **Files:**
 - Create: `napyclaw/migrations/004_specialist_memory.sql`
@@ -99,6 +103,8 @@ git commit -m "feat: migration 004 — specialist_memory table and history windo
 ---
 
 ## Task 2: Database Layer
+
+**Spec Reference:** Section 1 (Data Model), Section 6 (History window configuration)
 
 **Files:**
 - Modify: `napyclaw/db.py`
@@ -408,6 +414,8 @@ git commit -m "feat: db — specialist_memory CRUD, job_description/verbatim_tur
 
 ## Task 3: PromptBuilder Module
 
+**Spec Reference:** Section 2 (System Prompt Layering), Section 5 (Onboarding Flow), Section 9 (New Module: prompt_builder.py)
+
 **Files:**
 - Create: `napyclaw/prompt_builder.py`
 - Create: `tests/test_prompt_builder.py`
@@ -692,6 +700,8 @@ git commit -m "feat: PromptBuilder module — layered system prompt with markdow
 ---
 
 ## Task 4: Specialist Tools
+
+**Spec Reference:** Section 3 (Trust Tiers), Section 4 (Agent Tools)
 
 **Files:**
 - Create: `napyclaw/tools/specialist_tools.py`
@@ -1044,6 +1054,8 @@ git commit -m "feat: specialist tools — SetJobDescription, ManageSpecialistMem
 
 ## Task 5: Background Summarizer
 
+**Spec Reference:** Section 6 (Background Summarizer), Section 3 (Trust Tiers — routing logic)
+
 **Files:**
 - Create: `napyclaw/summarizer.py`
 - Create: `tests/test_summarizer.py`
@@ -1323,6 +1335,8 @@ git commit -m "feat: background summarizer — prune detection, LLM summarize, t
 
 ## Task 6: Wire app.py
 
+**Spec Reference:** Section 2 (System Prompt Layering), Section 5 (Onboarding Flow), Section 6 (Background Summarizer), Section 10 (Implementation Order)
+
 **Files:**
 - Modify: `napyclaw/app.py`
 - Modify: `tests/test_app.py`
@@ -1596,6 +1610,8 @@ git commit -m "feat: wire PromptBuilder and summarizer into app.py, update Group
 
 ## Task 7: User Identity in comms
 
+**Spec Reference:** Section 7 (User Identity)
+
 **Files:**
 - Modify: `services/comms/main.py`
 - Modify: `services/comms/static/index.html`
@@ -1732,6 +1748,8 @@ git commit -m "feat: user identity — extract Tailscale-User-Name, display in s
 
 ## Task 8: Backstage WebSocket Events in comms
 
+**Spec Reference:** Section 8 (Backstage Column — WS event types table)
+
 **Files:**
 - Modify: `services/comms/main.py`
 
@@ -1813,6 +1831,8 @@ git commit -m "feat: comms backstage events — forward bot events to WS, handle
 ---
 
 ## Task 9: Backstage Column UI
+
+**Spec Reference:** Section 8 (Backstage Column — layout, interaction model, sticky area, colors), Section 3 (Trust Tiers — Adjust/Exclude behavior), Resolved Decisions (background colors)
 
 **Files:**
 - Modify: `services/comms/static/index.html`
@@ -2186,6 +2206,8 @@ git commit -m "feat: Backstage column — three-panel layout, sticky approvals, 
 
 ## Task 10: Onboarding System Prompt Language
 
+**Spec Reference:** Section 5 (Onboarding Flow — all 5 steps)
+
 This is already handled by `PromptBuilder._build_blocks` in Task 3 — when `job_description` is `None`, `_ONBOARDING_INSTRUCTION` is injected in Block 1. No additional code needed.
 
 - [ ] **Step 1: Verify onboarding prompt fires on new specialist**
@@ -2202,6 +2224,8 @@ git commit -m "fix: onboarding prompt copy tweaks"
 ---
 
 ## Task 11: Final Integration Test
+
+**Spec Reference:** All sections — validates end-to-end coverage
 
 - [ ] **Step 1: Run full test suite**
 
