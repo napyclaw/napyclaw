@@ -140,6 +140,7 @@ Agent-driven onboarding:
 2. After a few turns, agent proposes a summary in first person: "Here's what I understand my role to be — does this look right?"
 3. User confirms → agent calls `set_job_description()` and seeds initial `specialist_memory` entries
 4. Agent announces it's ready for normal work
+5. Agent proactively asks for resources: draws on job_description context to ask specifically where possible ("Do you have a preferred forecasting framework I should know about?"), then broadly: "Are there any other resources or knowledge I'll need to do this role at the highest level?" — any resources provided are saved via `manage_specialist_memory(add, resource, ...)`
 
 Transition is natural — no mode switch required. Updates follow the same flow at any future point in the relationship.
 
