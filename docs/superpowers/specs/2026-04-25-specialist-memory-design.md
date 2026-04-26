@@ -53,6 +53,8 @@ Prompt built by a dedicated `napyclaw/prompt_builder.py` module. Takes `GroupCon
 Block 1: IDENTITY
   - name, job_title, job_description, owner_name
   - trust tier rules: which memory types require approval vs. notify
+  - instruction: always speak in first person ("I", "my role", "I can help with...")
+    — the user is talking to a named specialist, not reading a description of one
 
 Block 2: RESPONSIBILITIES
   - ALL responsibility rows for this group_id (never truncated)
@@ -135,7 +137,7 @@ No explicit mode flag. System prompt Block 1 includes: **"If job_description is 
 
 Agent-driven onboarding:
 1. Agent asks open questions about the user's needs from this specialist
-2. After a few turns, agent proposes a summary: "Here's what I understand your role to be — does this look right?"
+2. After a few turns, agent proposes a summary in first person: "Here's what I understand my role to be — does this look right?"
 3. User confirms → agent calls `set_job_description()` and seeds initial `specialist_memory` entries
 4. Agent announces it's ready for normal work
 
