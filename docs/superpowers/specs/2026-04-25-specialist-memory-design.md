@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS specialist_memory_embedding_idx
     WITH (lists = 50);
 ```
 
-`group_id = 'global'` is the shared cross-specialist pool. Entries written there are readable by all specialists. No separate table or visibility flag needed — mirrors how `thoughts` already handles per-specialist scoping.
+All entries are specialist-scoped via `group_id`. Cross-specialist access control is deferred to a future design.
 
 `thoughts` table is unchanged. Already per-specialist via `group_id`.
 
@@ -64,12 +64,10 @@ Block 2: RESPONSIBILITIES
 
 Block 3: WORKING CONTEXT
   - Top-k semantic: task/tool/resource/preference/fact for this group_id
-  - Top-k from group_id='global' specialist_memory entries
   - Matched to current message embedding
 
 Block 4: EPISODIC MEMORY
   - Top-k from thoughts for this group_id
-  - Top-k from thoughts where group_id='global'
   - Matched to current message embedding
 
 Block 5: PRUNED HISTORY
@@ -125,11 +123,11 @@ Trust tier: ask first. Agent proposes, waits for user confirmation, then writes 
 ### `manage_specialist_memory(action, type, content, entry_id=None, scope="specialist")`
 - `action`: `add` | `update` | `delete`
 - `type`: `responsibility` | `task` | `tool` | `resource` | `preference` | `fact`
-- `scope`: `"specialist"` (default) | `"global"`
+- `scope`: `"specialist"` (only value for now — cross-specialist access deferred)
 - Trust tier determined by type per table above.
 
-### `save_to_memory(content: str, scope: "specialist" | "global" = "specialist")`
-Agent-gated episodic capture to `thoughts`. Used directly by agent and by background summarizer. Always write + notify. No ask-first — content is agent-synthesized, not raw user text.
+### `save_to_memory(content: str)`
+Agent-gated episodic capture to `thoughts` for this specialist. Used directly by agent and by background summarizer. Always write + notify. No ask-first — content is agent-synthesized, not raw user text.
 
 ---
 
@@ -286,9 +284,9 @@ class PromptBuilder:
 
 ---
 
-## Open Questions
+## Resolved Decisions
 
-- Correction window length: 2 or 3 turns? (3 feels safer for mobile keyboard typos)
-- `thoughts` global pool: separate `group_id='global'` bucket in existing table, or new flag column?
-- Backstage background colors: dark theme — suggest surface variant A (#1e3a5f) for current turn, surface variant B (#2d1f3d) for focused turn
-- Summarization model: same model as specialist, or a cheaper/faster model for background tasks?
+- **Correction window:** 3 turns. Configurable per specialist later if needed, hardcoded for now.
+- **Global memory pool:** deferred. All `specialist_memory` and `thoughts` entries are specialist-scoped only. Cross-specialist access control (global, roles, manager, etc.) is a separate future design — keeping specialist framing clean now makes that easier to layer on later.
+- **Backstage background colors:** current turn = same as page background (no special treatment); focused turn = `#1e3a5f` (darker variant of the chat bubble blue).
+- **Summarization model:** same model as the specialist. Tunable later but no separate model config for now.
