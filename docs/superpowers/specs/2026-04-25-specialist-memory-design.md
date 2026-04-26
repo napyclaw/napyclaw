@@ -103,7 +103,11 @@ Memory writes are gated by type:
 | `preference` | Write + notify | Write immediately, notify in Backstage |
 | `fact` | Write + notify | Write immediately, notify in Backstage |
 
-**Correction window:** Write + notify items are queued for 2-3 turns before committing. If the user's next message contains a correction, the queued item is revised before storing. After the window expires with no correction, auto-commit.
+**Correction window:** Write + notify items are queued for 2-3 turns before committing. During the window, the user sees two actions in the Backstage sticky area per queued item:
+- **Adjust** — opens an inline edit field in the Backstage sticky area; user rewrites the content; does not post anything to the chat column
+- **Exclude** — removes the item from the queue silently; nothing posted to chat
+
+Both actions are handled entirely in the Backstage column ("btw" interaction) — the chat column is never interrupted. After the window expires with no action, auto-commit.
 
 The agent can also suggest adding new scope: "This request is outside my current responsibilities — should I add this as a new responsibility?" This follows the ask-first flow.
 
@@ -192,7 +196,7 @@ Three-panel layout:
 
 **Top — sticky:**
 - Pending approvals: proposed `responsibility` or `job_description` changes with approve/reject
-- Correction window items: queued memory entries with turn countdown, edit/cancel per item
+- Correction window items: queued memory entries with turn countdown, **Adjust** or **Exclude** per item — both handled inline in the Backstage sticky area without interrupting the chat column
 - Egress approvals (existing) migrate here
 
 **Bottom — current turn:**
@@ -214,7 +218,9 @@ Three-panel layout:
 | Event | Payload |
 |-------|---------|
 | `context_used` | `{group_id, blocks: [{type, count}]}` |
-| `memory_queued` | `{group_id, type, content, window_turns_remaining}` |
+| `memory_queued` | `{group_id, token, type, content, window_turns_remaining}` |
+| `memory_adjusted` | `{group_id, token, revised_content}` — user submitted Adjust |
+| `memory_excluded` | `{group_id, token}` — user clicked Exclude |
 | `memory_pending_approval` | `{group_id, type, content, token}` |
 | `memory_committed` | `{group_id, type, content}` |
 | `background_task` | `{group_id, event: "summarizer_ran" \| "exchanges_pruned" \| "window_opened"}` |
