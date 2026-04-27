@@ -132,3 +132,27 @@ async def test_approval_respond_posts_to_egressguard(client):
     mock_post.assert_called_once()
     call_url = mock_post.call_args[0][0]
     assert "tok-abc" in call_url
+
+
+def test_ws_hello_sets_owner_name_forwarded_in_message():
+    """WS hello with owner_name is forwarded as sender_name in subsequent message payload."""
+    import services.comms.main as m
+    m._bot_webhook = "http://bot:9000/inbound"
+    m._ws_owner_name = ""
+    m._ws_connection = None
+
+    with patch("services.comms.main._http_post", new_callable=AsyncMock) as mock_post:
+        with SyncClient(m.app) as c:
+            with c.websocket_connect("/ws") as ws:
+                ws.send_json({
+                    "type": "hello",
+                    "owner_name": "Nathan",
+                })
+                ws.send_json({
+                    "type": "message",
+                    "group_id": "grp-1",
+                    "text": "Hello from Nathan",
+                })
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[0][1]
+        assert payload["sender_name"] == "Nathan"

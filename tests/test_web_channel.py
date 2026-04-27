@@ -116,3 +116,33 @@ class TestWebChannel:
                 headers={"Content-Type": "application/json"},
             )
             assert resp.status == 400
+
+    async def test_inbound_sender_name_from_payload(self):
+        """POST to /inbound with sender_name sets msg.sender_name correctly."""
+        ch = WebChannel(comms_url="http://comms:8001", webhook_host="bot", webhook_port=9000)
+
+        received: list[Message] = []
+
+        async def capture(msg: Message) -> None:
+            received.append(msg)
+
+        ch.register_handler(capture)
+
+        app = web.Application()
+        app.router.add_post("/inbound", ch._handle_inbound)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/inbound",
+                json={
+                    "group_id": "grp-1",
+                    "sender_id": "owner",
+                    "sender_name": "Nathan",
+                    "text": "Hi from Nathan",
+                },
+            )
+            assert resp.status == 200
+            await asyncio.sleep(0)
+
+        assert len(received) == 1
+        assert received[0].sender_name == "Nathan"
