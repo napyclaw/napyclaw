@@ -196,7 +196,22 @@ class NapyClaw:
         elif event_type == "memory_excluded":
             if token:
                 await self.db.delete_specialist_memory(token)
-        # memory_approved: content already saved in the summarizer path; no-op here
+        elif event_type == "memory_approved":
+            content = data.get("content", "").strip()
+            entry_type = data.get("entry_type", "responsibility")
+            group_id = data.get("group_id", "")
+            if token and content and group_id:
+                try:
+                    embedding = await self._memory.embed(content) if self._memory else []
+                except Exception:
+                    embedding = []
+                await self.db.save_specialist_memory(
+                    id=token,
+                    group_id=group_id,
+                    type=entry_type,
+                    content=content,
+                    embedding=embedding or None,
+                )
 
     def _matches_trigger(self, text: str, context: GroupContext) -> bool:
         """Check if message text triggers the bot for this group."""
@@ -332,7 +347,7 @@ class NapyClaw:
 
         if context.memory_enabled and self._memory:
             try:
-                query_embedding = await self._memory._embed(text)
+                query_embedding = await self._memory.embed(text)
             except Exception:
                 query_embedding = None
 
@@ -361,13 +376,8 @@ class NapyClaw:
             async def _load_episodic():
                 if not query_embedding:
                     return []
-                embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
                 try:
-                    rows = await self._memory._pool.fetch(
-                        "SELECT content, similarity FROM match_thoughts($1::vector, $2, $3)",
-                        embedding_str, context.group_id, 5,
-                    )
-                    return [row["content"] for row in rows]
+                    return await self._memory.search_thoughts(query_embedding, context.group_id)
                 except Exception:
                     return []
 
@@ -387,7 +397,7 @@ class NapyClaw:
         )
 
         # Rebuild tools with live notify/embed_fn so specialist tools have correct callables
-        embed_fn = self._memory._embed if self._memory else _noop_embed
+        embed_fn = self._memory.embed if self._memory else _noop_embed
         context.agent.tools = self._build_tools(
             context, notify=_notify_backstage, embed_fn=embed_fn
         )

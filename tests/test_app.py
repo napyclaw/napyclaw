@@ -344,6 +344,9 @@ class _FakeDB:
     async def search_specialist_memory(self, group_id: str, embedding, type_filter=None, top_k=5) -> list[dict]:
         return []
 
+    async def save_specialist_memory(self, **kwargs) -> None:
+        self._store[kwargs.get("id", "")] = kwargs
+
 
 @pytest.fixture
 def mock_app(tmp_path):
@@ -430,3 +433,68 @@ async def test_admin_dm_seeded_on_start(mock_app):
     await mock_app.start()
     row2 = await mock_app.db.load_group_context("admin")
     assert row2["history"] == [{"role": "user", "text": "test"}]
+
+
+async def test_control_memory_approved_saves_to_db(tmp_path):
+    """memory_approved event calls db.save_specialist_memory with correct args."""
+    from unittest.mock import AsyncMock, MagicMock
+    from napyclaw.memory import NullMemory
+
+    db = MagicMock()
+    db.save_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    memory = NullMemory()
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock(), memory=memory)
+
+    await app._handle_control_event({
+        "type": "memory_approved",
+        "token": "tok-789",
+        "content": "Always greet users by name.",
+        "entry_type": "responsibility",
+        "group_id": "grp-sales",
+    })
+
+    db.save_specialist_memory.assert_called_once_with(
+        id="tok-789",
+        group_id="grp-sales",
+        type="responsibility",
+        content="Always greet users by name.",
+        embedding=None,
+    )
+
+
+async def test_control_memory_approved_noop_when_missing_fields(tmp_path):
+    """memory_approved is a no-op when content or group_id is missing."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    db = MagicMock()
+    db.save_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock())
+
+    # Missing content
+    await app._handle_control_event({
+        "type": "memory_approved",
+        "token": "tok-001",
+        "content": "",
+        "group_id": "grp-sales",
+    })
+    db.save_specialist_memory.assert_not_called()
+
+    # Missing group_id
+    await app._handle_control_event({
+        "type": "memory_approved",
+        "token": "tok-002",
+        "content": "Some content",
+        "group_id": "",
+    })
+    db.save_specialist_memory.assert_not_called()

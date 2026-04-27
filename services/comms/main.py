@@ -73,6 +73,9 @@ _pending_approvals: dict[str, str] = {}
 # Correction window items: token -> {content, entry_type, group_id, turns_remaining}
 _correction_window: dict[str, dict] = {}
 
+# Pending memory approvals: token -> {content, entry_type, group_id}
+_pending_memory_approvals: dict[str, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -235,6 +238,15 @@ async def backstage_event(req: BackstageEventRequest) -> dict:
             "turns_remaining": req.event.get("window_turns_remaining", 3),
         }
 
+    if event_type == "memory_pending_approval":
+        token = req.event.get("token", "")
+        if token:
+            _pending_memory_approvals[token] = {
+                "content": req.event.get("content", ""),
+                "entry_type": req.event.get("entry_type", ""),
+                "group_id": req.group_id,
+            }
+
     await _push_to_ws({**req.event, "group_id": req.group_id})
     return {"ok": True}
 
@@ -324,10 +336,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
             elif msg_type == "memory_approved":
                 token = data.get("token", "")
+                stored = _pending_memory_approvals.pop(token, None)
                 if _bot_webhook:
                     asyncio.create_task(_http_post(_bot_webhook, {
                         "type": "memory_approved",
                         "token": token,
+                        "content": stored["content"] if stored else "",
+                        "entry_type": stored["entry_type"] if stored else "",
+                        "group_id": stored["group_id"] if stored else "",
                     }))
 
             elif msg_type == "memory_excluded":

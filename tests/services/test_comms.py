@@ -22,6 +22,8 @@ async def client(monkeypatch):
         comms_main._ws_connection = None
         comms_main._specialists = []
         comms_main._pending_approvals = {}
+        comms_main._pending_memory_approvals = {}
+        comms_main._correction_window = {}
         from services.comms.main import app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c, mock_wc.return_value
@@ -156,3 +158,58 @@ def test_ws_hello_sets_owner_name_forwarded_in_message():
         mock_post.assert_called_once()
         payload = mock_post.call_args[0][1]
         assert payload["sender_name"] == "Nathan"
+
+
+async def test_backstage_event_stores_pending_memory_approval(client):
+    """POST /backstage/event with memory_pending_approval populates _pending_memory_approvals."""
+    import services.comms.main as m
+    m._pending_memory_approvals = {}
+
+    c, _ = client
+    resp = await c.post("/backstage/event", json={
+        "group_id": "grp-sales",
+        "event": {
+            "type": "memory_pending_approval",
+            "token": "tok-mem-1",
+            "content": "Always greet users by name.",
+            "entry_type": "responsibility",
+        },
+    })
+    assert resp.status_code == 200
+    assert "tok-mem-1" in m._pending_memory_approvals
+    stored = m._pending_memory_approvals["tok-mem-1"]
+    assert stored["content"] == "Always greet users by name."
+    assert stored["entry_type"] == "responsibility"
+    assert stored["group_id"] == "grp-sales"
+
+
+def test_ws_memory_approved_forwards_with_content():
+    """WS memory_approved message is enriched with stored content before forwarding."""
+    import services.comms.main as m
+    m._bot_webhook = "http://bot:9000/inbound"
+    m._ws_connection = None
+    m._pending_memory_approvals = {
+        "tok-mem-2": {
+            "content": "Be concise in responses.",
+            "entry_type": "responsibility",
+            "group_id": "grp-eng",
+        }
+    }
+
+    with patch("services.comms.main._http_post", new_callable=AsyncMock) as mock_post:
+        with SyncClient(m.app) as c:
+            with c.websocket_connect("/ws") as ws:
+                ws.send_json({
+                    "type": "memory_approved",
+                    "token": "tok-mem-2",
+                })
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[0][1]
+        assert payload["type"] == "memory_approved"
+        assert payload["token"] == "tok-mem-2"
+        assert payload["content"] == "Be concise in responses."
+        assert payload["entry_type"] == "responsibility"
+        assert payload["group_id"] == "grp-eng"
+
+    # Token should have been consumed (popped)
+    assert "tok-mem-2" not in m._pending_memory_approvals

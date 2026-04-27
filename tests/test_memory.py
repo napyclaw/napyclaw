@@ -130,3 +130,49 @@ class TestVectorMemory:
         mock_http.post.assert_called_once()
         call_kwargs = mock_http.post.call_args
         assert "nomic-embed-text" in str(call_kwargs)
+
+    async def test_embed_delegates_to_private_embed(self):
+        """Public embed() method delegates to private _embed()."""
+        mem = VectorMemory(
+            pool=None,
+            embed_model="nomic-embed-text",
+            ollama_base_url="http://100.1.2.3:11434",
+        )
+        mem._embed = AsyncMock(return_value=[0.5, 0.6, 0.7])
+        result = await mem.embed("hello")
+        mem._embed.assert_called_once_with("hello")
+        assert result == [0.5, 0.6, 0.7]
+
+    async def test_search_thoughts_returns_content_list(self):
+        """search_thoughts calls pool.fetch with correct SQL and returns content list."""
+        mock_pool = MagicMock()
+        mock_pool.fetch = AsyncMock(return_value=[
+            {"content": "thought one", "similarity": 0.9},
+            {"content": "thought two", "similarity": 0.8},
+        ])
+        mem = VectorMemory(
+            pool=mock_pool,
+            embed_model="nomic-embed-text",
+            ollama_base_url="http://100.1.2.3:11434",
+        )
+        result = await mem.search_thoughts([0.1, 0.2, 0.3], "grp-1", top_k=5)
+        assert result == ["thought one", "thought two"]
+        mock_pool.fetch.assert_called_once()
+        call_args = mock_pool.fetch.call_args[0]
+        assert "match_thoughts" in call_args[0]
+        # call_args: (sql, embedding_str, group_id, top_k)
+        assert call_args[2] == "grp-1"
+        assert call_args[3] == 5
+
+    async def test_search_thoughts_empty_embedding_returns_empty(self):
+        """search_thoughts returns [] without hitting the pool when embedding is empty."""
+        mock_pool = MagicMock()
+        mock_pool.fetch = AsyncMock()
+        mem = VectorMemory(
+            pool=mock_pool,
+            embed_model="nomic-embed-text",
+            ollama_base_url="http://100.1.2.3:11434",
+        )
+        result = await mem.search_thoughts([], "grp-1")
+        assert result == []
+        mock_pool.fetch.assert_not_called()
