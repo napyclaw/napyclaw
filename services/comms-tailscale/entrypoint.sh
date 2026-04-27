@@ -11,5 +11,5 @@ fi
 
 exec /usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state &
 sleep 2
-/usr/local/bin/tailscale up --authkey="$TS_AUTHKEY" --hostname=napyclaw-comms
+/usr/local/bin/tailscale up --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-napyclaw-comms}"
 wait

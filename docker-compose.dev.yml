@@ -1,0 +1,151 @@
+# Dev stack — run alongside prod with: docker compose -p napyclaw-dev -f docker-compose.dev.yml up -d
+#
+# Shares the prod Infisical instance (http://host.docker.internal:8888 → infisical:8080).
+# All services read from the Infisical "dev" environment.
+# Ports shifted +10 from prod: comms on 8011, no separate Infisical port needed.
+# Tailscale sidecar registers as "napyclaw-dev" on the tailnet.
+#
+# One-time setup before first run:
+#   1. Open Infisical at http://localhost:8888, create a "dev" environment in the napyclaw project.
+#   2. Copy all prod secrets into dev (or use Infisical's secret inheritance / override feature).
+#   3. Generate a second ephemeral Tailscale auth key at tailscale.com/settings/keys,
+#      save it as TS_AUTHKEY in the Infisical dev environment.
+#   4. Copy .env to .env.dev if you need different bootstrap creds (usually not needed).
+
+networks:
+  comms-net-dev:
+    driver: bridge
+  egress-net-dev:
+    driver: bridge
+  search-net-dev:
+    driver: bridge
+  data-net-dev:
+    internal: true
+    driver: bridge
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    networks:
+      - comms-net-dev
+      - egress-net-dev
+      - search-net-dev
+      - data-net-dev
+    environment:
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      INFISICAL_URL: http://host.docker.internal:8888
+      INFISICAL_ENVIRONMENT: dev
+      EGRESS_URL: http://egressguard:8000
+      COMMS_URL: http://comms:8001
+      SEARXNG_URL: http://searxng:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+      egressguard:
+        condition: service_started
+      comms:
+        condition: service_started
+
+  egressguard:
+    build: ./services/egressguard
+    restart: unless-stopped
+    networks:
+      - egress-net-dev
+    environment:
+      COMMS_URL: http://comms:8001
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      comms:
+        condition: service_started
+
+  comms:
+    build: ./services/comms
+    restart: unless-stopped
+    networks:
+      - comms-net-dev
+      - data-net-dev
+    ports:
+      - "8011:8001"
+    environment:
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      INFISICAL_URL: http://host.docker.internal:8888
+      INFISICAL_ENVIRONMENT: dev
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/specialists')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    networks:
+      - search-net-dev
+    volumes:
+      - ./searxng:/etc/searxng
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    networks:
+      - data-net-dev
+    environment:
+      POSTGRES_DB: napyclaw
+      POSTGRES_USER: napyclaw
+      POSTGRES_PASSWORD: napyclaw-local
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+      - ./napyclaw/migrations/001_thoughts.sql:/docker-entrypoint-initdb.d/001_thoughts.sql
+      - ./napyclaw/migrations/002_operational.sql:/docker-entrypoint-initdb.d/002_operational.sql
+      - ./napyclaw/migrations/003_webchat.sql:/docker-entrypoint-initdb.d/003_webchat.sql
+      - ./napyclaw/migrations/004_specialist_memory.sql:/docker-entrypoint-initdb.d/004_specialist_memory.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U napyclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  comms-tailscale:
+    build: ./services/comms-tailscale
+    restart: unless-stopped
+    network_mode: service:comms
+    environment:
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
+      INFISICAL_URL: http://host.docker.internal:8888
+      INFISICAL_ENVIRONMENT: dev
+      TS_HOSTNAME: napyclaw-dev
+      TS_STATE_DIR: /var/lib/tailscale
+    volumes:
+      - tailscale-state-dev:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    depends_on:
+      comms:
+        condition: service_healthy
+
+volumes:
+  pgdata-dev:
+  tailscale-state-dev:
