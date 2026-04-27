@@ -338,6 +338,12 @@ class _FakeDB:
     async def save_message(self, **_) -> None:
         pass
 
+    async def load_specialist_memory(self, group_id: str, type_filter=None) -> list[dict]:
+        return []
+
+    async def search_specialist_memory(self, group_id: str, embedding, type_filter=None, top_k=5) -> list[dict]:
+        return []
+
 
 @pytest.fixture
 def mock_app(tmp_path):

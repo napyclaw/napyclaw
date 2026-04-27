@@ -22,6 +22,8 @@ from napyclaw.tools.base import Tool
 
 _log = logging.getLogger(__name__)
 
+_bg_tasks: set[asyncio.Task] = set()
+
 _SEARCH_BLOCK = re.compile(
     r"<!-- SEARCH_RESULTS -->.*?<!-- /SEARCH_RESULTS -->",
     re.DOTALL,
@@ -122,7 +124,7 @@ class NapyClaw:
                 channel_type=row.get("channel_type", "slack"),
                 verbatim_turns=row.get("verbatim_turns", 7),
                 summary_turns=row.get("summary_turns", 5),
-                owner_name=row.get("owner_name", "the user"),
+                owner_name=row.get("owner_id", "the user"),
             )
             ctx.agent.tools = self._build_tools(ctx)
             ctx.agent.system_prompt = self._prompt_builder.build(
@@ -411,7 +413,7 @@ class NapyClaw:
                 notify=_notify_backstage,
                 embed_fn=embed_fn,
             )
-            asyncio.create_task(summarizer.run(
+            _task = asyncio.create_task(summarizer.run(
                 history=context.agent.history,
                 identity_block=identity_block,
                 group_id=context.group_id,
@@ -419,6 +421,8 @@ class NapyClaw:
                 verbatim_turns=context.verbatim_turns,
                 summary_turns=context.summary_turns,
             ))
+            _bg_tasks.add(_task)
+            _task.add_done_callback(_bg_tasks.discard)
 
         # Persist context after each turn
         if context.is_first_interaction:
