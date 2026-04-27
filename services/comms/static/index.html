@@ -185,6 +185,72 @@
   #hamburger { display: none; background: none; border: none; color: var(--muted);
                cursor: pointer; font-size: 20px; padding: 0 8px; }
 
+  /* --- Backstage column --- */
+  #backstage {
+      width: 260px; min-width: 260px;
+      background: var(--bg); border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
+      font-size: 12px;
+  }
+  #backstage-sticky {
+      flex-shrink: 0; border-bottom: 1px solid var(--border);
+      padding: 8px; display: flex; flex-direction: column; gap: 6px;
+      max-height: 40%; overflow-y: auto;
+  }
+  #backstage-sticky:empty::after {
+      content: 'No pending items'; color: var(--muted); font-size: 11px; padding: 4px;
+  }
+  #backstage-turns {
+      flex: 1; overflow-y: auto; padding: 8px;
+      display: flex; flex-direction: column; gap: 6px;
+  }
+  .backstage-turn {
+      border-radius: 6px; border: 1px solid var(--border);
+      overflow: hidden;
+  }
+  .backstage-turn.current { background: var(--bg); }
+  .backstage-turn.focused { background: #1e3a5f; border-color: #2563eb; }
+  .backstage-turn-header {
+      padding: 5px 8px; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      color: var(--muted); font-size: 11px;
+  }
+  .backstage-turn.current .backstage-turn-header { color: var(--text); }
+  .backstage-turn.focused .backstage-turn-header { color: var(--accent-lt); }
+  .backstage-turn-body { display: none; padding: 6px 8px; }
+  .backstage-turn.open .backstage-turn-body { display: block; }
+  .backstage-event { margin-bottom: 5px; line-height: 1.4; }
+  .backstage-event .ev-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+  .backstage-event .ev-content { color: var(--text); margin-top: 2px; }
+
+  /* pending approval card */
+  .bs-approval {
+      background: var(--surface); border: 1px solid var(--danger);
+      border-radius: 6px; padding: 8px;
+  }
+  .bs-approval .bs-label { color: var(--danger); font-size: 10px; text-transform: uppercase; margin-bottom: 4px; }
+  .bs-approval .bs-content { color: var(--text); margin-bottom: 6px; font-size: 12px; }
+  .bs-approval .bs-actions { display: flex; gap: 4px; }
+  .bs-approval button { padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);
+                         background: var(--bg); color: var(--text); cursor: pointer; font-size: 11px; }
+  .bs-approval button.approve { border-color: #22c55e; color: #22c55e; }
+  .bs-approval button.deny { border-color: var(--danger); color: var(--danger); }
+
+  /* correction window card */
+  .bs-queued {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px;
+  }
+  .bs-queued .bs-label { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 4px; }
+  .bs-queued .bs-content { color: var(--text); margin-bottom: 4px; font-size: 12px; }
+  .bs-queued .bs-turns { color: var(--muted); font-size: 10px; margin-bottom: 6px; }
+  .bs-queued .bs-actions { display: flex; gap: 4px; align-items: center; }
+  .bs-queued .bs-adjust-input { display: none; width: 100%; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+      padding: 4px 6px; font-size: 12px; margin-top: 4px; }
+  .bs-queued button { padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);
+                      background: var(--bg); color: var(--text); cursor: pointer; font-size: 11px; }
+
   #identity-bar {
     padding: 8px 14px;
     border-bottom: 1px solid var(--border);
@@ -238,6 +304,12 @@
     </div>
   </div>
 
+  <!-- Backstage -->
+  <div id="backstage">
+    <div id="backstage-sticky"></div>
+    <div id="backstage-turns"></div>
+  </div>
+
 </div>
 
 <!-- New specialist modal -->
@@ -283,10 +355,32 @@ function connect() {
     if (data.type === 'message') {
       appendMessage(data.group_id, data.role || 'assistant', data.text, data.replayed);
       if (data.group_id === currentGroup) scrollToBottom();
+      if (data.role === 'assistant' || (!data.role && data.group_id)) {
+        bsSealTurn(data.group_id);
+      }
     } else if (data.type === 'typing') {
       if (data.group_id === currentGroup) setTyping(data.on);
     } else if (data.type === 'approval') {
       appendApproval(data);
+    } else if (data.type === 'context_used') {
+      bsAddEvent(data.group_id, data);
+    } else if (data.type === 'tool_call') {
+      bsAddEvent(data.group_id, data);
+    } else if (data.type === 'background_task') {
+      bsAddEvent(data.group_id, data);
+    } else if (data.type === 'memory_committed') {
+      bsAddEvent(data.group_id, data);
+    } else if (data.type === 'memory_queued') {
+      _correctionWindow.push({
+        token: data.token,
+        entry_type: data.entry_type || data.type,
+        content: data.content,
+        turns_remaining: data.window_turns_remaining || 3,
+      });
+      renderBackstageSticky();
+    } else if (data.type === 'memory_pending_approval') {
+      _pendingMemoryApprovals.push(data);
+      renderBackstageSticky();
     }
   };
 
@@ -398,24 +492,40 @@ function renderMessages(groupId) {
   const container = document.getElementById('messages');
   container.innerHTML = '';
   removeTypingIndicator();
-  (messages[groupId] || []).forEach(m => {
+  (messages[groupId] || []).forEach((m, i) => {
+    const turnIndex = Math.floor(i / 2);
     if (m.role === 'approval') {
       container.appendChild(buildApprovalCard(m.data));
     } else {
-      container.appendChild(buildBubble(m.role, m.text));
+      container.appendChild(buildBubble(m.role, m.text, turnIndex));
     }
   });
 }
 
-function buildBubble(role, text) {
+function buildBubble(role, text, turnIndex) {
   const wrap = document.createElement('div');
   const safeRole = (role === 'user' || role === 'assistant') ? role : 'assistant';
   wrap.className = `msg ${safeRole}`;
+  if (turnIndex !== undefined) {
+    wrap.dataset.turnIndex = turnIndex;
+    wrap.onclick = () => focusTurnInBackstage(turnIndex);
+  }
   const initial = safeRole === 'user' ? 'Y' : (currentGroup ? (currentGroup[0] || 'A').toUpperCase() : 'A');
   wrap.innerHTML = `
     <div class="avatar">${initial}</div>
     <div class="bubble">${esc(text)}</div>`;
   return wrap;
+}
+
+function focusTurnInBackstage(turnIndex) {
+  const turns = document.querySelectorAll('.backstage-turn');
+  turns.forEach(el => el.classList.remove('open', 'focused'));
+  const target = [...turns].find(el => parseInt(el.dataset.turnIndex) === turnIndex);
+  if (target) {
+    target.classList.add('open', 'focused');
+    focusedTurnIndex = turnIndex;
+    target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
 
 function buildApprovalCard(data) {
@@ -543,6 +653,183 @@ function submitRename(e) {
   }
   document.getElementById('rename-form').style.display = 'none';
   document.getElementById('rename-btn').style.display = '';
+}
+
+// ---- Backstage ----
+
+const backstageTurns = {};
+let currentTurnIndex = 0;
+let focusedTurnIndex = null;
+
+function bsAddEvent(groupId, event) {
+  if (!backstageTurns[groupId]) backstageTurns[groupId] = [];
+  const turns = backstageTurns[groupId];
+  if (!turns.length || turns[turns.length - 1].sealed) {
+    turns.push({ index: currentTurnIndex, events: [], sealed: false });
+  }
+  turns[turns.length - 1].events.push(event);
+  if (groupId === currentGroup) renderBackstage(groupId);
+}
+
+function bsSealTurn(groupId) {
+  if (!backstageTurns[groupId]) return;
+  const turns = backstageTurns[groupId];
+  if (turns.length) {
+    turns[turns.length - 1].sealed = true;
+    currentTurnIndex++;
+  }
+}
+
+function renderBackstage(groupId) {
+  const turnsEl = document.getElementById('backstage-turns');
+  turnsEl.innerHTML = '';
+  const turns = backstageTurns[groupId] || [];
+  [...turns].reverse().forEach(turn => {
+    const isCurrent = !turn.sealed;
+    const isFocused = turn.index === focusedTurnIndex;
+    const div = document.createElement('div');
+    div.className = 'backstage-turn' +
+        (isCurrent ? ' current' : '') +
+        (isFocused ? ' focused' : '') +
+        (isCurrent || isFocused ? ' open' : '');
+    div.dataset.turnIndex = turn.index;
+    const header = document.createElement('div');
+    header.className = 'backstage-turn-header';
+    header.textContent = isCurrent ? 'Current turn' : `Turn ${turn.index + 1}`;
+    header.onclick = () => toggleBackstageTurn(div, turn.index, groupId);
+    const body = document.createElement('div');
+    body.className = 'backstage-turn-body';
+    turn.events.forEach(ev => {
+      body.appendChild(buildBackstageEvent(ev));
+    });
+    div.appendChild(header);
+    div.appendChild(body);
+    turnsEl.appendChild(div);
+  });
+}
+
+function toggleBackstageTurn(div, turnIndex, groupId) {
+  const wasOpen = div.classList.contains('open');
+  document.querySelectorAll('.backstage-turn:not(.current)').forEach(el => {
+    el.classList.remove('open', 'focused');
+  });
+  if (!wasOpen) {
+    div.classList.add('open', 'focused');
+    focusedTurnIndex = turnIndex;
+  } else {
+    focusedTurnIndex = null;
+  }
+}
+
+function buildBackstageEvent(ev) {
+  const wrap = document.createElement('div');
+  wrap.className = 'backstage-event';
+  const label = document.createElement('div');
+  label.className = 'ev-label';
+  const content = document.createElement('div');
+  content.className = 'ev-content';
+  label.textContent = (ev.type || '').replace(/_/g, ' ');
+  if (ev.tool_name) {
+    content.textContent = `${ev.tool_name}: ${esc(JSON.stringify(ev.args || {}))}`;
+  } else if (ev.content) {
+    content.textContent = esc(ev.content);
+  } else if (ev.blocks) {
+    content.textContent = ev.blocks.map(b => `${b.type}: ${b.count}`).join(', ');
+  } else if (ev.event) {
+    content.textContent = ev.event.replace(/_/g, ' ');
+  }
+  wrap.appendChild(label);
+  wrap.appendChild(content);
+  return wrap;
+}
+
+function renderBackstageSticky() {
+  const sticky = document.getElementById('backstage-sticky');
+  sticky.innerHTML = '';
+  (_pendingMemoryApprovals || []).forEach(item => {
+    sticky.appendChild(buildBsApprovalCard(item));
+  });
+  (_correctionWindow || []).forEach(item => {
+    sticky.appendChild(buildBsQueuedCard(item));
+  });
+}
+
+const _pendingMemoryApprovals = [];
+const _correctionWindow = [];
+
+function buildBsApprovalCard(item) {
+  const div = document.createElement('div');
+  div.className = 'bs-approval';
+  div.innerHTML = `
+      <div class="bs-label">Pending: ${esc(item.entry_type || item.type || '')}</div>
+      <div class="bs-content">${esc(item.content)}</div>
+      <div class="bs-actions">
+          <button class="approve" onclick="bsApprove('${esc(item.token)}', this.closest('.bs-approval'))">Approve</button>
+          <button class="deny" onclick="bsReject('${esc(item.token)}', this.closest('.bs-approval'))">Reject</button>
+      </div>`;
+  return div;
+}
+
+function buildBsQueuedCard(item) {
+  const div = document.createElement('div');
+  div.className = 'bs-queued';
+  div.dataset.token = item.token;
+  div.innerHTML = `
+      <div class="bs-label">${esc(item.entry_type || item.type || '')}</div>
+      <div class="bs-content">${esc(item.content)}</div>
+      <div class="bs-turns">${item.turns_remaining} turn${item.turns_remaining !== 1 ? 's' : ''} to review</div>
+      <div class="bs-actions">
+          <button onclick="bsAdjustOpen('${esc(item.token)}', this.closest('.bs-queued'))">Adjust</button>
+          <button onclick="bsExclude('${esc(item.token)}', this.closest('.bs-queued'))">Exclude</button>
+      </div>
+      <input class="bs-adjust-input" placeholder="Revised content..." onkeydown="bsAdjustKey(event, '${esc(item.token)}')">`;
+  return div;
+}
+
+function bsApprove(token, card) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'approval', token, decision: 'approve_once' }));
+  }
+  card.remove();
+  const idx = _pendingMemoryApprovals.findIndex(i => i.token === token);
+  if (idx >= 0) _pendingMemoryApprovals.splice(idx, 1);
+}
+
+function bsReject(token, card) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'memory_excluded', token }));
+  }
+  card.remove();
+  const idx = _pendingMemoryApprovals.findIndex(i => i.token === token);
+  if (idx >= 0) _pendingMemoryApprovals.splice(idx, 1);
+}
+
+function bsAdjustOpen(token, card) {
+  const input = card.querySelector('.bs-adjust-input');
+  input.style.display = 'block';
+  input.focus();
+}
+
+function bsAdjustKey(e, token) {
+  if (e.key === 'Enter') {
+    const revised = e.target.value.trim();
+    if (!revised) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'memory_adjusted', token, revised_content: revised }));
+    }
+    e.target.closest('.bs-queued').remove();
+    const idx = _correctionWindow.findIndex(i => i.token === token);
+    if (idx >= 0) _correctionWindow.splice(idx, 1);
+  }
+}
+
+function bsExclude(token, card) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'memory_excluded', token }));
+  }
+  card.remove();
+  const idx = _correctionWindow.findIndex(i => i.token === token);
+  if (idx >= 0) _correctionWindow.splice(idx, 1);
 }
 
 // ---- Utils ----
