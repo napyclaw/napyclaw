@@ -70,6 +70,9 @@ _specialists: list[dict] = []
 # Pending approval callbacks: token -> egressguard callback URL
 _pending_approvals: dict[str, str] = {}
 
+# Correction window items: token -> {content, entry_type, group_id, turns_remaining}
+_correction_window: dict[str, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -126,6 +129,11 @@ class SpecialistsSyncRequest(BaseModel):
 class ApprovalRespondRequest(BaseModel):
     token: str
     decision: str  # "approve_once" | "approve_always" | "deny_once" | "deny_always"
+
+
+class BackstageEventRequest(BaseModel):
+    group_id: str
+    event: dict
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +221,24 @@ async def specialists_sync(req: SpecialistsSyncRequest) -> dict:
     return {"ok": True}
 
 
+@app.post("/backstage/event")
+async def backstage_event(req: BackstageEventRequest) -> dict:
+    """Bot pushes a backstage event; comms forwards to WS frontend."""
+    event_type = req.event.get("type")
+
+    if event_type == "memory_queued":
+        token = req.event.get("token", "")
+        _correction_window[token] = {
+            "content": req.event.get("content", ""),
+            "entry_type": req.event.get("entry_type", ""),
+            "group_id": req.group_id,
+            "turns_remaining": req.event.get("window_turns_remaining", 3),
+        }
+
+    await _push_to_ws({**req.event, "group_id": req.group_id})
+    return {"ok": True}
+
+
 @app.post("/approval/respond")
 async def approval_respond(req: ApprovalRespondRequest) -> dict:
     callback_url = _pending_approvals.pop(req.token, None)
@@ -282,6 +308,27 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     asyncio.create_task(_http_post(callback_url, {
                         "token": token,
                         "decision": decision,
+                    }))
+
+            elif msg_type == "memory_adjusted":
+                token = data.get("token", "")
+                revised = data.get("revised_content", "")
+                if token in _correction_window:
+                    _correction_window[token]["content"] = revised
+                if _bot_webhook:
+                    asyncio.create_task(_http_post(_bot_webhook, {
+                        "type": "memory_adjusted",
+                        "token": token,
+                        "revised_content": revised,
+                    }))
+
+            elif msg_type == "memory_excluded":
+                token = data.get("token", "")
+                _correction_window.pop(token, None)
+                if _bot_webhook:
+                    asyncio.create_task(_http_post(_bot_webhook, {
+                        "type": "memory_excluded",
+                        "token": token,
                     }))
 
     except WebSocketDisconnect:
