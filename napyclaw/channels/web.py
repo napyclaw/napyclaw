@@ -82,7 +82,7 @@ class WebChannel(Channel):
                 group_id=group_id,
                 channel_name=data.get("display_name") or group_id,
                 sender_id=data.get("sender_id", "owner"),
-                sender_name=data.get("sender_id", "owner"),
+                sender_name=data.get("sender_name") or data.get("sender_id", "owner"),
                 text=data.get("text", ""),
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 channel_type="webchat",

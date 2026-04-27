@@ -267,7 +267,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     payload: dict = {
                         "group_id": group_id,
                         "sender_id": "owner",
-                        "sender_name": _ws_owner_name or "owner",
+                        "sender_name": _ws_owner_name,
                         "text": text,
                     }
                     if display_name:
