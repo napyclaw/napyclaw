@@ -538,16 +538,17 @@ function buildApprovalCard(data) {
     <h4>&#9888; Egress Approval Needed</h4>
     <div class="domain">Domain: <strong>${esc(data.hostname)}</strong></div>
     <div class="actions">
-      <button class="approve" onclick="respond('${esc(data.token)}','approve_once',this.closest('.approval-card'))">Approve Once</button>
-      <button class="approve" onclick="respond('${esc(data.token)}','approve_always',this.closest('.approval-card'))">Approve Always</button>
-      <button class="deny" onclick="respond('${esc(data.token)}','deny_once',this.closest('.approval-card'))">Deny Once</button>
-      <button class="deny" onclick="respond('${esc(data.token)}','deny_always',this.closest('.approval-card'))">Deny Always</button>
+      <button class="approve" onclick="respond('approve_once',this.closest('.approval-card'))">Approve Once</button>
+      <button class="approve" onclick="respond('approve_always',this.closest('.approval-card'))">Approve Always</button>
+      <button class="deny" onclick="respond('deny_once',this.closest('.approval-card'))">Deny Once</button>
+      <button class="deny" onclick="respond('deny_always',this.closest('.approval-card'))">Deny Always</button>
     </div>`;
   return div;
 }
 
-async function respond(token, decision, card) {
+async function respond(decision, card) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const token = card.dataset.token;
   ws.send(JSON.stringify({ type: 'approval', token, decision }));
   card.innerHTML = `<div style="color:var(--muted);font-size:12px">Decision sent: ${decision.replace('_',' ')}</div>`;
   pendingApprovals = Math.max(0, pendingApprovals - 1);
