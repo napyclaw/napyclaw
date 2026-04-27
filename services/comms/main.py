@@ -322,6 +322,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         "revised_content": revised,
                     }))
 
+            elif msg_type == "memory_approved":
+                token = data.get("token", "")
+                if _bot_webhook:
+                    asyncio.create_task(_http_post(_bot_webhook, {
+                        "type": "memory_approved",
+                        "token": token,
+                    }))
+
             elif msg_type == "memory_excluded":
                 token = data.get("token", "")
                 _correction_window.pop(token, None)
