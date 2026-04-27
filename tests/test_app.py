@@ -76,6 +76,10 @@ def _make_context(
         active_client=client,
         is_first_interaction=False,
         agent=MagicMock(),
+        job_description=None,
+        verbatim_turns=7,
+        summary_turns=5,
+        owner_name="Nate",
     )
 
 
@@ -177,7 +181,7 @@ class TestNapyClawHandleMessage:
         # Context should be created
         assert "C001" in app.contexts
         ctx = app.contexts["C001"]
-        assert ctx.default_name == "General_napy"
+        assert ctx.default_name == "general"
         assert ctx.owner_id == "U001"
 
     async def test_untriggered_message_stored_only(self, tmp_path: Path):

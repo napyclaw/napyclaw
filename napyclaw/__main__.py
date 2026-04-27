@@ -17,9 +17,13 @@ from napyclaw.scheduler import Scheduler
 from napyclaw.shield import ContentShield
 from napyclaw.tools.file_ops import FileReadTool, FileWriteTool
 from napyclaw.tools.identity import AddNickname, ClearNicknames, ListModelsTool, RenameBotTool, SwitchModel
-from napyclaw.tools.memory_tool import SaveToMemoryTool
 from napyclaw.tools.messaging import SendMessageTool
 from napyclaw.tools.scheduling import ScheduleTaskTool
+from napyclaw.tools.specialist_tools import (
+    ManageSpecialistMemoryTool,
+    SaveToMemoryTool,
+    SetJobDescriptionTool,
+)
 from napyclaw.tools.web_search import ExaBackend, SearXNGBackend, TavilyBackend, WebSearchTool
 
 
@@ -135,7 +139,15 @@ async def main() -> None:
     injection_guard = InjectionGuard()
 
     # --- Tool factory ---
-    def build_tools(ctx: GroupContext):
+    async def _noop_notify(p: dict) -> None:
+        pass
+
+    async def _noop_embed(t: str) -> list[float]:
+        return []
+
+    def build_tools(ctx: GroupContext, notify=None, embed_fn=None):
+        _notify = notify or _noop_notify
+        _embed = embed_fn or _noop_embed
         tools = []
         if search_backends:
             tools.append(WebSearchTool(backends=search_backends))
@@ -149,28 +161,20 @@ async def main() -> None:
             ClearNicknames(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             SwitchModel(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             ListModelsTool(config=config, http_client=guarded_http),
-            SaveToMemoryTool(memory=memory, group_id=ctx.group_id),
+            SetJobDescriptionTool(db=db, ctx=ctx),
+            ManageSpecialistMemoryTool(
+                db=db,
+                group_id=ctx.group_id,
+                notify=_notify,
+                embed_fn=_embed,
+            ),
+            SaveToMemoryTool(
+                memory=memory,
+                group_id=ctx.group_id,
+                notify=_notify,
+            ),
         ]
         return tools
-
-    # --- System prompt factory ---
-    def build_system_prompt(ctx: GroupContext) -> str:
-        parts = [f"Your name is {ctx.display_name}."]
-
-        if ctx.nicknames:
-            parts.append(f"Your nicknames are: {', '.join(ctx.nicknames)}.")
-
-        if ctx.is_first_interaction:
-            parts.append(
-                "This is your first conversation in this channel. "
-                "Introduce yourself and ask if the user would like to give you a different name."
-            )
-
-        parts.append(
-            f"You are running on {ctx.active_client.provider}/{ctx.active_client.model}."
-        )
-
-        return " ".join(parts)
 
     # --- App ---
     app = NapyClaw(
@@ -179,7 +183,6 @@ async def main() -> None:
         channel=channel,
         build_tools=build_tools,
         build_client=build_client,
-        build_system_prompt=build_system_prompt,
         injection_guard=injection_guard,
         shield=shield,
         memory=memory,
