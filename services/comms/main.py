@@ -7,7 +7,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -57,6 +57,7 @@ OWNER_CHANNEL = os.environ.get("OWNER_CHANNEL", "")
 _slack = AsyncWebClient(token=SLACK_BOT_TOKEN)
 _bot_webhook: str | None = None
 _ws_connection: WebSocket | None = None
+_ws_owner_name: str = ""
 _http_client: httpx.AsyncClient | None = None
 
 # In-memory message buffer: group_id -> deque of {"role", "text"} dicts
@@ -220,6 +221,18 @@ async def approval_respond(req: ApprovalRespondRequest) -> dict:
     return {"ok": True}
 
 
+@app.get("/identity")
+async def get_identity(request: Request) -> dict:
+    raw = request.headers.get("Tailscale-User-Name", "")
+    if raw and "@" in raw:
+        name = raw.split("@")[0].strip().title()
+    elif raw:
+        name = raw.strip().title()
+    else:
+        name = ""
+    return {"owner_name": name, "raw": raw}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
     global _ws_connection
@@ -232,6 +245,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
             if msg_type == "hello":
                 group_id = data.get("group_id")
+                owner_name = data.get("owner_name", "")
+                global _ws_owner_name
+                _ws_owner_name = owner_name
                 if group_id and group_id in _message_buffer:
                     for buffered in list(_message_buffer[group_id]):
                         await ws.send_json({
@@ -248,7 +264,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 display_name = data.get("display_name")
                 _buffer_message(group_id, "user", text)
                 if _bot_webhook:
-                    payload: dict = {"group_id": group_id, "sender_id": "owner", "text": text}
+                    payload: dict = {
+                        "group_id": group_id,
+                        "sender_id": "owner",
+                        "sender_name": _ws_owner_name or "owner",
+                        "text": text,
+                    }
                     if display_name:
                         payload["display_name"] = display_name
                     asyncio.create_task(_http_post(_bot_webhook, payload))

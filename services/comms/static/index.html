@@ -184,6 +184,14 @@
   }
   #hamburger { display: none; background: none; border: none; color: var(--muted);
                cursor: pointer; font-size: 20px; padding: 0 8px; }
+
+  #identity-bar {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  #identity-name { color: var(--accent-lt); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -191,6 +199,7 @@
 
   <!-- Sidebar -->
   <div id="sidebar">
+    <div id="identity-bar">Logged in as <span id="identity-name">...</span></div>
     <div id="sidebar-header">
       <div class="label">Specialists</div>
       <div id="specialist-list"></div>
@@ -254,6 +263,8 @@ const messages = {};
 let specialists = [];
 // pending approval badge count
 let pendingApprovals = 0;
+// identity
+let ownerName = '';
 
 // ---- WebSocket ----
 
@@ -263,7 +274,7 @@ function connect() {
   ws.onopen = () => {
     reconnectDelay = 1000;
     if (currentGroup) {
-      ws.send(JSON.stringify({ type: 'hello', group_id: currentGroup }));
+      ws.send(JSON.stringify({ type: 'hello', group_id: currentGroup, owner_name: ownerName }));
     }
   };
 
@@ -286,6 +297,19 @@ function connect() {
 }
 
 function reconnect() { connect(); }
+
+// ---- Identity ----
+
+async function loadIdentity() {
+  try {
+    const resp = await fetch('/identity');
+    const data = await resp.json();
+    ownerName = data.owner_name || '';
+    document.getElementById('identity-name').textContent = ownerName || 'unknown';
+  } catch (e) {
+    document.getElementById('identity-name').textContent = 'unknown';
+  }
+}
 
 // ---- Specialists ----
 
@@ -333,7 +357,7 @@ function selectGroup(groupId) {
 
   // Request replay from server
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'hello', group_id: groupId }));
+    ws.send(JSON.stringify({ type: 'hello', group_id: groupId, owner_name: ownerName }));
   }
 
   // Clear approval badge when entering admin
@@ -540,6 +564,7 @@ function toggleSidebar() {
 
 connect();
 loadSpecialists();
+loadIdentity();
 </script>
 </body>
 </html>
