@@ -137,6 +137,8 @@ class NapyClaw:
 
         # Register message handler and connect
         self.channel.register_handler(self.handle_message)
+        if hasattr(self.channel, "register_control_handler"):
+            self.channel.register_control_handler(self._handle_control_event)
         await self.channel.connect()
 
         # Seed admin DM only if it doesn't already exist
@@ -182,6 +184,19 @@ class NapyClaw:
                     pass
         except Exception as exc:
             _log.warning("_sync_specialists failed: %s", exc)
+
+    async def _handle_control_event(self, data: dict) -> None:
+        """Handle non-chat control events forwarded from the Backstage panel."""
+        event_type = data.get("type")
+        token = data.get("token", "")
+        if event_type == "memory_adjusted":
+            revised = data.get("revised_content", "")
+            if token and revised:
+                await self.db.update_specialist_memory(token, content=revised)
+        elif event_type == "memory_excluded":
+            if token:
+                await self.db.delete_specialist_memory(token)
+        # memory_approved: content already saved in the summarizer path; no-op here
 
     def _matches_trigger(self, text: str, context: GroupContext) -> bool:
         """Check if message text triggers the bot for this group."""

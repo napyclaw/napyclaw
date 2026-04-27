@@ -372,6 +372,49 @@ def mock_app(tmp_path):
     return app
 
 
+async def test_control_memory_adjusted_updates_db(tmp_path):
+    """memory_adjusted event calls db.update_specialist_memory with revised content."""
+    db = MagicMock()
+    db.update_specialist_memory = AsyncMock()
+    db.delete_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock())
+
+    await app._handle_control_event({
+        "type": "memory_adjusted",
+        "token": "tok-123",
+        "revised_content": "Updated responsibility text.",
+    })
+
+    db.update_specialist_memory.assert_called_once_with("tok-123", content="Updated responsibility text.")
+    db.delete_specialist_memory.assert_not_called()
+
+
+async def test_control_memory_excluded_deletes_from_db(tmp_path):
+    """memory_excluded event calls db.delete_specialist_memory with the token."""
+    db = MagicMock()
+    db.update_specialist_memory = AsyncMock()
+    db.delete_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock())
+
+    await app._handle_control_event({
+        "type": "memory_excluded",
+        "token": "tok-456",
+    })
+
+    db.delete_specialist_memory.assert_called_once_with("tok-456")
+    db.update_specialist_memory.assert_not_called()
+
+
 async def test_admin_dm_seeded_on_start(mock_app):
     """Admin DM is created on first start; not overwritten on re-start."""
     await mock_app.start()

@@ -25,7 +25,7 @@ class TestSetJobDescriptionTool:
         ctx.active_client.provider = "openai"
         ctx.active_client.model = "gpt-4o"
         ctx.is_first_interaction = False
-        ctx.history = []
+        ctx.agent.history = []
         ctx.job_title = "Analyst"
         ctx.memory_enabled = True
         ctx.channel_type = "webchat"

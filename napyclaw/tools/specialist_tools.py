@@ -45,7 +45,7 @@ class SetJobDescriptionTool(Tool):
             provider=ctx.active_client.provider,
             model=ctx.active_client.model,
             is_first_interaction=ctx.is_first_interaction,
-            history=ctx.history,
+            history=ctx.agent.history,
             job_title=ctx.job_title,
             memory_enabled=ctx.memory_enabled,
             channel_type=ctx.channel_type,

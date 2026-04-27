@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Any, Callable, Awaitable
 
 import aiohttp
 from aiohttp import web
 
 from napyclaw.channels.base import Channel, Message
+
+_CONTROL_TYPES = {"memory_approved", "memory_adjusted", "memory_excluded"}
 
 
 class WebChannel(Channel):
@@ -22,6 +25,13 @@ class WebChannel(Channel):
         self._webhook_port = webhook_port
         self._session: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
+        self._control_handler: Callable[[dict], Awaitable[None]] | None = None
+
+    def register_control_handler(
+        self, handler: Callable[[dict], Awaitable[None]]
+    ) -> None:
+        """Register a handler for non-chat control events (memory_approved, etc.)."""
+        self._control_handler = handler
 
     async def connect(self) -> None:
         self._session = aiohttp.ClientSession()
@@ -75,6 +85,12 @@ class WebChannel(Channel):
             data = await request.json()
         except Exception:
             return web.Response(status=400)
+
+        # Route control events (memory approvals, adjustments, exclusions) separately
+        if data.get("type") in _CONTROL_TYPES:
+            if self._control_handler:
+                asyncio.create_task(self._control_handler(data))
+            return web.json_response({"ok": True})
 
         if self._handler:
             group_id = data.get("group_id", "")
