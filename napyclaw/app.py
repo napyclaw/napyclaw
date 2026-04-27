@@ -18,6 +18,7 @@ from napyclaw.models.base import LLMClient
 from napyclaw.models.openai_client import LLMUnavailableError
 from napyclaw.prompt_builder import PromptBuilder, RetrievedMemory, SpecialistMemoryRow
 from napyclaw.shield import ContentShield
+from napyclaw.summarizer import Summarizer, should_summarize
 from napyclaw.tools.base import Tool
 
 _log = logging.getLogger(__name__)
@@ -399,7 +400,6 @@ class NapyClaw:
             )
 
         # Fire summarizer as background task when history crosses prune threshold
-        from napyclaw.summarizer import Summarizer, should_summarize
         if should_summarize(
             context.agent.history,
             verbatim_turns=context.verbatim_turns,
