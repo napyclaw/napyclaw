@@ -20,4 +20,5 @@ RUN python -m spacy download en_core_web_lg
 COPY napyclaw.toml .
 COPY napyclaw/ napyclaw/
 
+ENV PYTHONUNBUFFERED=1
 CMD ["python", "-m", "napyclaw"]
