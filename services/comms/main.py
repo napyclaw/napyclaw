@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pathlib
 from collections import deque
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -39,14 +41,24 @@ def _load_secret(name: str, environment: str = "prod") -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global SLACK_BOT_TOKEN, OWNER_CHANNEL, _slack, _http_client
+    global SLACK_BOT_TOKEN, OWNER_CHANNEL, _slack, _http_client, _db_pool
     environment = os.environ.get("INFISICAL_ENVIRONMENT", "prod")
     SLACK_BOT_TOKEN = _load_secret("SLACK_BOT_TOKEN", environment) or os.environ.get("SLACK_BOT_TOKEN", "")
     OWNER_CHANNEL = _load_secret("SLACK_OWNER_CHANNEL", environment) or os.environ.get("OWNER_CHANNEL", "")
     _slack = AsyncWebClient(token=SLACK_BOT_TOKEN)
     _http_client = httpx.AsyncClient()
+    db_url = _load_secret("DB_URL", environment) or os.environ.get("DB_URL", "")
+    if db_url:
+        try:
+            import asyncpg
+            _db_pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+        except Exception:
+            _db_pool = None
     yield
     await _http_client.aclose()
+    if _db_pool is not None:
+        await _db_pool.close()
+        _db_pool = None
 
 
 app = FastAPI(title="comms", lifespan=lifespan)
@@ -59,6 +71,7 @@ _bot_webhook: str | None = None
 _ws_connection: WebSocket | None = None
 _ws_owner_name: str = ""
 _http_client: httpx.AsyncClient | None = None
+_db_pool: Any | None = None
 
 # In-memory message buffer: group_id -> deque of {"role", "text"} dicts
 _message_buffer: dict[str, deque] = {}
@@ -104,6 +117,105 @@ async def _http_post(url: str, payload: dict) -> None:
         await _http_client.post(url, json=payload, timeout=5.0)
     except Exception:
         pass
+
+
+def _extract_message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    text = message.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _history_to_messages(history: list[dict]) -> list[dict]:
+    messages: list[dict] = []
+    for item in history:
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text = _extract_message_text(item).strip()
+        if text:
+            messages.append({"role": role, "text": text})
+    return messages
+
+
+def _merge_message_lists(base: list[dict], extra: list[dict]) -> list[dict]:
+    if not base:
+        return list(extra)
+    if not extra:
+        return list(base)
+
+    max_overlap = min(len(base), len(extra))
+    for overlap in range(max_overlap, 0, -1):
+        if base[-overlap:] == extra[:overlap]:
+            return list(base) + list(extra[overlap:])
+    return list(base) + list(extra)
+
+
+async def _load_persisted_specialists() -> list[dict]:
+    if _db_pool is None:
+        return []
+
+    try:
+        rows = await _db_pool.fetch(
+            """
+            SELECT group_id, display_name, nicknames, job_title
+            FROM group_contexts
+            WHERE channel_type = 'webchat' AND group_id != 'admin'
+            ORDER BY group_id
+            """
+        )
+    except Exception:
+        return []
+
+    specialists: list[dict] = []
+    for row in rows:
+        try:
+            nicknames = json.loads(row["nicknames"])
+        except Exception:
+            nicknames = []
+        specialists.append({
+            "group_id": row["group_id"],
+            "display_name": row["display_name"],
+            "nicknames": nicknames,
+            "job_title": row["job_title"],
+        })
+    return specialists
+
+
+async def _load_group_history(group_id: str) -> list[dict]:
+    persisted: list[dict] = []
+    if _db_pool is not None:
+        try:
+            row = await _db_pool.fetchrow(
+                "SELECT history FROM group_contexts WHERE group_id = $1",
+                group_id,
+            )
+            if row is not None:
+                persisted = _history_to_messages(json.loads(row["history"]))
+        except Exception:
+            persisted = []
+
+    buffered = list(_message_buffer.get(group_id, []))
+    return _merge_message_lists(persisted, buffered)
+
+
+async def _load_specialists() -> list[dict]:
+    merged: dict[str, dict] = {}
+    for item in await _load_persisted_specialists():
+        merged[item["group_id"]] = item
+    for item in _specialists:
+        merged[item["group_id"]] = item
+    return list(merged.values())
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +326,12 @@ async def notify_approval(req: ApprovalRequest) -> dict:
 
 @app.get("/specialists")
 async def get_specialists() -> list[dict]:
-    return _specialists
+    return await _load_specialists()
+
+
+@app.get("/history/{group_id}")
+async def get_history(group_id: str) -> list[dict]:
+    return await _load_group_history(group_id)
 
 
 @app.post("/specialists-sync")
@@ -286,8 +403,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 owner_name = data.get("owner_name", "")
                 global _ws_owner_name
                 _ws_owner_name = owner_name
-                if group_id and group_id in _message_buffer:
-                    for buffered in list(_message_buffer[group_id]):
+                if group_id:
+                    for buffered in await _load_group_history(group_id):
                         await ws.send_json({
                             "type": "message",
                             "group_id": group_id,
