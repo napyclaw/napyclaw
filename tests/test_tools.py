@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from napyclaw.db import Database
 from napyclaw.tools.base import Tool
 from napyclaw.tools.web_search import SearXNGBackend, WebSearchTool
 from napyclaw.tools.file_ops import FileReadTool, FileWriteTool
@@ -271,15 +270,34 @@ class TestSendMessageTool:
 # ---------------------------------------------------------------------------
 
 
+class _SchedDB:
+    """In-memory stub for scheduling tests."""
+
+    def __init__(self):
+        self._tasks: dict[str, "ScheduledTask"] = {}
+
+    async def save_scheduled_task(self, task) -> None:
+        self._tasks[task.id] = task
+
+    async def list_scheduled_tasks(self, group_id: str) -> list:
+        return [t for t in self._tasks.values() if t.group_id == group_id]
+
+    async def update_task_status(self, task_id: str, status: str, **_) -> None:
+        if task_id in self._tasks:
+            from dataclasses import replace
+            self._tasks[task_id] = replace(self._tasks[task_id], status=status)
+
+    async def log_task_run(self, **_) -> None:
+        pass
+
+
 @pytest.fixture
-async def sched_db(tmp_path: Path) -> Database:
-    db = Database(tmp_path / "test.db")
-    await db.init()
-    return db
+def sched_db() -> _SchedDB:
+    return _SchedDB()
 
 
 class TestScheduleTaskTool:
-    async def test_create_task(self, sched_db: Database):
+    async def test_create_task(self, sched_db: _SchedDB):
         tool = ScheduleTaskTool(db=sched_db, group_id="C001", owner_id="U001")
         result = await tool.execute(
             action="create",
@@ -291,7 +309,7 @@ class TestScheduleTaskTool:
         assert data["status"] == "active"
         assert data["prompt"] == "Say hello"
 
-    async def test_list_tasks(self, sched_db: Database):
+    async def test_list_tasks(self, sched_db: _SchedDB):
         tool = ScheduleTaskTool(db=sched_db, group_id="C001", owner_id="U001")
         await tool.execute(
             action="create",
@@ -304,12 +322,12 @@ class TestScheduleTaskTool:
         assert len(data) == 1
         assert data[0]["prompt"] == "Task 1"
 
-    async def test_list_empty(self, sched_db: Database):
+    async def test_list_empty(self, sched_db: _SchedDB):
         tool = ScheduleTaskTool(db=sched_db, group_id="C001", owner_id="U001")
         result = await tool.execute(action="list")
         assert result == "No scheduled tasks."
 
-    async def test_cancel_task(self, sched_db: Database):
+    async def test_cancel_task(self, sched_db: _SchedDB):
         tool = ScheduleTaskTool(db=sched_db, group_id="C001", owner_id="U001")
         create_result = await tool.execute(
             action="create",
@@ -323,7 +341,7 @@ class TestScheduleTaskTool:
         data = json.loads(cancel_result)
         assert data["status"] == "paused"
 
-    async def test_cancel_wrong_group(self, sched_db: Database):
+    async def test_cancel_wrong_group(self, sched_db: _SchedDB):
         tool_a = ScheduleTaskTool(db=sched_db, group_id="C001", owner_id="U001")
         create_result = await tool_a.execute(
             action="create",
@@ -337,7 +355,7 @@ class TestScheduleTaskTool:
         result = await tool_b.execute(action="cancel", task_id=task_id)
         assert "not found" in result
 
-    async def test_create_missing_fields(self, sched_db: Database):
+    async def test_create_missing_fields(self, sched_db: _SchedDB):
         tool = ScheduleTaskTool(db=sched_db, group_id="C001", owner_id="U001")
         result = await tool.execute(action="create")
         assert "Error" in result
@@ -348,10 +366,24 @@ class TestScheduleTaskTool:
 # ---------------------------------------------------------------------------
 
 
+class _IdentityDB:
+    """In-memory stub for identity tool tests."""
+
+    def __init__(self):
+        self._store: dict[str, dict] = {}
+
+    async def save_group_context(self, group_id: str, **kwargs) -> None:
+        existing = self._store.get(group_id, {})
+        existing.update({"group_id": group_id, **kwargs})
+        self._store[group_id] = existing
+
+    async def load_group_context(self, group_id: str) -> dict | None:
+        return self._store.get(group_id)
+
+
 @pytest.fixture
-async def identity_db(tmp_path: Path) -> Database:
-    db = Database(tmp_path / "test.db")
-    await db.init()
+async def identity_db() -> _IdentityDB:
+    db = _IdentityDB()
     await db.save_group_context(
         group_id="C001",
         default_name="General_napy",
@@ -367,7 +399,7 @@ async def identity_db(tmp_path: Path) -> Database:
 
 
 class TestRenameBot:
-    async def test_owner_can_rename(self, identity_db: Database):
+    async def test_owner_can_rename(self, identity_db: _IdentityDB):
         tool = RenameBot(db=identity_db, group_id="C001", owner_id="U001")
         result = await tool.execute(sender_id="U001", new_name="kevin")
         assert result == "Renamed to Kevin"
@@ -375,14 +407,14 @@ class TestRenameBot:
         ctx = await identity_db.load_group_context("C001")
         assert ctx["display_name"] == "Kevin"
 
-    async def test_non_owner_blocked(self, identity_db: Database):
+    async def test_non_owner_blocked(self, identity_db: _IdentityDB):
         tool = RenameBot(db=identity_db, group_id="C001", owner_id="U001")
         result = await tool.execute(sender_id="U999", new_name="hacker")
         assert "Only the channel owner" in result
 
 
 class TestAddNickname:
-    async def test_anyone_can_add(self, identity_db: Database):
+    async def test_anyone_can_add(self, identity_db: _IdentityDB):
         tool = AddNickname(db=identity_db, group_id="C001")
         result = await tool.execute(nickname="Kev")
         assert result == "Nickname 'Kev' added"
@@ -390,7 +422,7 @@ class TestAddNickname:
         ctx = await identity_db.load_group_context("C001")
         assert "Kev" in ctx["nicknames"]
 
-    async def test_duplicate_ignored(self, identity_db: Database):
+    async def test_duplicate_ignored(self, identity_db: _IdentityDB):
         tool = AddNickname(db=identity_db, group_id="C001")
         await tool.execute(nickname="Kev")
         await tool.execute(nickname="Kev")
@@ -400,7 +432,7 @@ class TestAddNickname:
 
 
 class TestClearNicknames:
-    async def test_owner_can_clear(self, identity_db: Database):
+    async def test_owner_can_clear(self, identity_db: _IdentityDB):
         tool_add = AddNickname(db=identity_db, group_id="C001")
         await tool_add.execute(nickname="Kev")
         await tool_add.execute(nickname="K-bot")
@@ -412,14 +444,14 @@ class TestClearNicknames:
         ctx = await identity_db.load_group_context("C001")
         assert ctx["nicknames"] == []
 
-    async def test_non_owner_blocked(self, identity_db: Database):
+    async def test_non_owner_blocked(self, identity_db: _IdentityDB):
         tool = ClearNicknames(db=identity_db, group_id="C001", owner_id="U001")
         result = await tool.execute(sender_id="U999")
         assert "Only the channel owner" in result
 
 
 class TestSwitchModel:
-    async def test_owner_can_switch(self, identity_db: Database):
+    async def test_owner_can_switch(self, identity_db: _IdentityDB):
         tool = SwitchModel(db=identity_db, group_id="C001", owner_id="U001")
         result = await tool.execute(sender_id="U001", provider="openai", model="gpt-4o")
         assert result == "Switched to openai/gpt-4o"
@@ -428,7 +460,7 @@ class TestSwitchModel:
         assert ctx["provider"] == "openai"
         assert ctx["model"] == "gpt-4o"
 
-    async def test_non_owner_blocked(self, identity_db: Database):
+    async def test_non_owner_blocked(self, identity_db: _IdentityDB):
         tool = SwitchModel(db=identity_db, group_id="C001", owner_id="U001")
         result = await tool.execute(sender_id="U999", provider="openai", model="gpt-4o")
         assert "Only the channel owner" in result

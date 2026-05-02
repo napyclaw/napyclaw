@@ -13,7 +13,7 @@ def _make_infisical_client(secrets: dict) -> MagicMock:
         if name not in secrets:
             raise KeyError(name)
         result = MagicMock()
-        result.secretValue = secrets[name]
+        result.secret_value = secrets[name]
         return result
 
     client.getSecret.side_effect = get_secret
@@ -45,10 +45,24 @@ BOOTSTRAP_ENV = {
 }
 
 
+_ISOLATED_TOML = {
+    "llm": {
+        "default_provider": "ollama",
+        "default_model": "llama3.3:latest",
+    },
+    "app": {
+        "oauth_callback_port": "8765",
+        "workspace_dir": "/tmp/napyclaw/workspace",
+        "groups_dir": "/tmp/napyclaw/groups",
+    },
+}
+
+
 def test_config_loads_all_fields():
     mock_client = _make_infisical_client(FULL_SECRETS)
     with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
-         patch.dict("os.environ", BOOTSTRAP_ENV):
+         patch.dict("os.environ", BOOTSTRAP_ENV), \
+         patch("napyclaw.config._load_toml", return_value=_ISOLATED_TOML):
         config = Config.from_infisical()
 
     assert config.openai_api_key == "sk-test"
@@ -60,10 +74,11 @@ def test_config_loads_all_fields():
 
 
 def test_config_max_history_tokens_optional():
-    secrets = {**FULL_SECRETS, "MAX_HISTORY_TOKENS": "4000"}
-    mock_client = _make_infisical_client(secrets)
+    mock_client = _make_infisical_client(FULL_SECRETS)
+    toml_with_tokens = {**_ISOLATED_TOML, "app": {**_ISOLATED_TOML["app"], "max_history_tokens": "4000"}}
     with patch("napyclaw.config.InfisicalClient", return_value=mock_client), \
-         patch.dict("os.environ", BOOTSTRAP_ENV):
+         patch.dict("os.environ", BOOTSTRAP_ENV), \
+         patch("napyclaw.config._load_toml", return_value=toml_with_tokens):
         config = Config.from_infisical()
 
     assert config.max_history_tokens == 4000
@@ -121,3 +136,42 @@ def test_config_egress_url_defaults(monkeypatch):
         config = Config.from_infisical()
     assert config.egress_url == "http://egressguard:8000"
     assert config.comms_url == "http://comms:8001"
+
+
+def test_config_webchat_defaults(monkeypatch, tmp_path):
+    """Config loads comms_channel, webhook_host, webhook_port from toml."""
+    toml_content = b"""
+[llm]
+default_provider = "openai"
+default_model = "gpt-4o"
+
+[comms]
+channel = "webchat"
+webhook_host = "bot"
+webhook_port = 9000
+
+[db]
+url = "postgresql://napyclaw:napyclaw-local@db:5432/napyclaw"
+
+[app]
+oauth_callback_port = 8765
+workspace_dir = "/tmp/workspace"
+groups_dir = "/tmp/groups"
+"""
+    toml_file = tmp_path / "napyclaw.toml"
+    toml_file.write_bytes(toml_content)
+
+    monkeypatch.setenv("INFISICAL_CLIENT_ID", "")
+    # Patch _load_infisical to return minimal secrets (no Slack required for webchat)
+    with patch("napyclaw.config._load_infisical", return_value={
+        "OPENAI_API_KEY": "sk-test",
+        "OLLAMA_API_KEY": "ollama-test",
+    }):
+        from napyclaw.config import Config
+        config = Config.load(toml_path=toml_file)
+
+    assert config.comms_channel == "webchat"
+    assert config.webhook_host == "bot"
+    assert config.webhook_port == 9000
+    assert config.slack_bot_token is None
+    assert config.slack_app_token is None

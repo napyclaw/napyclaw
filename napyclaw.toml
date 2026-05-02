@@ -1,6 +1,6 @@
 [llm]
 default_provider = "foundry"
-default_model = "grok-4-20-non-reasoning"
+default_model = "grok-4-20-non-reasoning-1"
 openai_base_url = "https://api.openai.com/v1"
 ollama_base_url = "http://localhost:11434/v1"
 foundry_base_url = "https://better-forecasting-foundry.openai.azure.com/openai/v1"
@@ -11,9 +11,14 @@ providers = ["searxng", "exa", "tavily"]
 searxng_url = "http://searxng:8080" # docker-compose service name
 
 [db]
-url = "postgresql://napyclaw:napyclaw-local@localhost:5432/napyclaw"
+url = "postgresql://napyclaw:napyclaw-local@db:5432/napyclaw"
 
 [app]
 oauth_callback_port = 8765
 workspace_dir = "/app/workspace"
 groups_dir = "/app/groups"
+
+[comms]
+channel = "webchat"
+webhook_host = "bot"
+webhook_port = 9000

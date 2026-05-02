@@ -7,7 +7,6 @@ import pytest
 from napyclaw.agent import Agent
 from napyclaw.app import GroupContext, GroupQueue, NapyClaw
 from napyclaw.channels.base import Message
-from napyclaw.db import Database
 from napyclaw.models.base import ChatResponse
 
 
@@ -77,6 +76,10 @@ def _make_context(
         active_client=client,
         is_first_interaction=False,
         agent=MagicMock(),
+        job_description=None,
+        verbatim_turns=7,
+        summary_turns=5,
+        owner_name="Nate",
     )
 
 
@@ -133,8 +136,7 @@ class TestTriggerMatching:
 
 class TestNapyClawHandleMessage:
     async def test_triggered_message_invokes_agent(self, tmp_path: Path):
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -179,12 +181,11 @@ class TestNapyClawHandleMessage:
         # Context should be created
         assert "C001" in app.contexts
         ctx = app.contexts["C001"]
-        assert ctx.default_name == "General_napy"
+        assert ctx.default_name == "general"
         assert ctx.owner_id == "U001"
 
     async def test_untriggered_message_stored_only(self, tmp_path: Path):
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -215,8 +216,7 @@ class TestNapyClawHandleMessage:
         assert "C001" not in app.contexts
 
     async def test_existing_context_trigger(self, tmp_path: Path):
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -262,8 +262,7 @@ class TestNapyClawHandleMessage:
     async def test_llm_error_sends_error_message(self, tmp_path: Path):
         from napyclaw.models.openai_client import LLMUnavailableError
 
-        db = Database(tmp_path / "test.db")
-        await db.init()
+        db = _FakeDB()
 
         channel = AsyncMock()
         config = MagicMock()
@@ -311,3 +310,191 @@ def test_build_routed_client_is_imported_in_main():
     """Verify build_routed_client is importable from __main__ context."""
     import napyclaw.__main__ as main_module
     assert hasattr(main_module, "build_routed_client")
+
+
+# ---------------------------------------------------------------------------
+# Admin DM seeding
+# ---------------------------------------------------------------------------
+
+
+class _FakeDB:
+    """Minimal in-memory DB stub for start() tests (no Postgres required)."""
+
+    def __init__(self):
+        self._store: dict[str, dict] = {}
+
+    async def load_all_group_contexts(self) -> list[dict]:
+        return []
+
+    async def save_group_context(self, group_id: str, **kwargs) -> None:
+        self._store[group_id] = {"group_id": group_id, **kwargs}
+
+    async def load_group_context(self, group_id: str) -> dict | None:
+        return self._store.get(group_id)
+
+    async def load_webchat_specialists(self) -> list[dict]:
+        return []
+
+    async def save_message(self, **_) -> None:
+        pass
+
+    async def load_specialist_memory(self, group_id: str, type_filter=None) -> list[dict]:
+        return []
+
+    async def search_specialist_memory(self, group_id: str, embedding, type_filter=None, top_k=5) -> list[dict]:
+        return []
+
+    async def save_specialist_memory(self, **kwargs) -> None:
+        self._store[kwargs.get("id", "")] = kwargs
+
+
+@pytest.fixture
+def mock_app(tmp_path):
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+    config.default_provider = "ollama"
+    config.default_model = "llama3.3:latest"
+    config.comms_channel = "webchat"
+    config.comms_url = "http://comms:8001"
+
+    channel = AsyncMock()
+    channel.register_handler = MagicMock()
+    db = _FakeDB()
+
+    mock_client = MagicMock()
+    mock_client.provider = "ollama"
+    mock_client.model = "llama3.3:latest"
+
+    app = NapyClaw(
+        config=config,
+        db=db,
+        channel=channel,
+        build_client=lambda p, m: mock_client,
+    )
+    return app
+
+
+async def test_control_memory_adjusted_updates_db(tmp_path):
+    """memory_adjusted event calls db.update_specialist_memory with revised content."""
+    db = MagicMock()
+    db.update_specialist_memory = AsyncMock()
+    db.delete_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock())
+
+    await app._handle_control_event({
+        "type": "memory_adjusted",
+        "token": "tok-123",
+        "revised_content": "Updated responsibility text.",
+    })
+
+    db.update_specialist_memory.assert_called_once_with("tok-123", content="Updated responsibility text.")
+    db.delete_specialist_memory.assert_not_called()
+
+
+async def test_control_memory_excluded_deletes_from_db(tmp_path):
+    """memory_excluded event calls db.delete_specialist_memory with the token."""
+    db = MagicMock()
+    db.update_specialist_memory = AsyncMock()
+    db.delete_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock())
+
+    await app._handle_control_event({
+        "type": "memory_excluded",
+        "token": "tok-456",
+    })
+
+    db.delete_specialist_memory.assert_called_once_with("tok-456")
+    db.update_specialist_memory.assert_not_called()
+
+
+async def test_admin_dm_seeded_on_start(mock_app):
+    """Admin DM is created on first start; not overwritten on re-start."""
+    await mock_app.start()
+    row = await mock_app.db.load_group_context("admin")
+    assert row is not None
+    assert row["memory_enabled"] is False
+    assert row["channel_type"] == "webchat"
+
+    # Simulate that admin DM has accumulated history
+    mock_app.db._store["admin"]["history"] = [{"role": "user", "text": "test"}]
+
+    # Re-start should NOT wipe the history
+    await mock_app.start()
+    row2 = await mock_app.db.load_group_context("admin")
+    assert row2["history"] == [{"role": "user", "text": "test"}]
+
+
+async def test_control_memory_approved_saves_to_db(tmp_path):
+    """memory_approved event calls db.save_specialist_memory with correct args."""
+    from unittest.mock import AsyncMock, MagicMock
+    from napyclaw.memory import NullMemory
+
+    db = MagicMock()
+    db.save_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    memory = NullMemory()
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock(), memory=memory)
+
+    await app._handle_control_event({
+        "type": "memory_approved",
+        "token": "tok-789",
+        "content": "Always greet users by name.",
+        "entry_type": "responsibility",
+        "group_id": "grp-sales",
+    })
+
+    db.save_specialist_memory.assert_called_once_with(
+        id="tok-789",
+        group_id="grp-sales",
+        type="responsibility",
+        content="Always greet users by name.",
+        embedding=None,
+    )
+
+
+async def test_control_memory_approved_noop_when_missing_fields(tmp_path):
+    """memory_approved is a no-op when content or group_id is missing."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    db = MagicMock()
+    db.save_specialist_memory = AsyncMock()
+
+    config = MagicMock()
+    config.workspace_dir = tmp_path / "workspace"
+    config.groups_dir = tmp_path / "groups"
+
+    app = NapyClaw(config=config, db=db, channel=MagicMock())
+
+    # Missing content
+    await app._handle_control_event({
+        "type": "memory_approved",
+        "token": "tok-001",
+        "content": "",
+        "group_id": "grp-sales",
+    })
+    db.save_specialist_memory.assert_not_called()
+
+    # Missing group_id
+    await app._handle_control_event({
+        "type": "memory_approved",
+        "token": "tok-002",
+        "content": "Some content",
+        "group_id": "",
+    })
+    db.save_specialist_memory.assert_not_called()

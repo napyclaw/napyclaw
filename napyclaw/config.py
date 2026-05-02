@@ -12,6 +12,7 @@ except ImportError:
     class ClientSettings:  # type: ignore[no-redef]
         client_id: str
         client_secret: str
+        site_url: str = "https://app.infisical.com"
 
     @_dc
     class GetSecretOptions:  # type: ignore[no-redef]
@@ -60,9 +61,9 @@ class Config:
     aws_secret_access_key: str | None
     aws_region: str | None
 
-    # Slack
-    slack_bot_token: str
-    slack_app_token: str
+    # Slack (optional — only required when comms_channel = "slack")
+    slack_bot_token: str | None
+    slack_app_token: str | None
 
     # Web search
     tavily_api_key: str | None
@@ -81,6 +82,11 @@ class Config:
     egress_url: str
     comms_url: str
 
+    # Comms channel mode
+    comms_channel: str          # "webchat" or "slack"
+    webhook_host: str           # hostname comms uses to reach the bot
+    webhook_port: int           # port WebChannel listens on
+
     # Paths
     workspace_dir: Path
     groups_dir: Path
@@ -95,6 +101,7 @@ class Config:
         llm = toml.get("llm", {})
         db = toml.get("db", {})
         app = toml.get("app", {})
+        comms_cfg = toml.get("comms", {})
 
         secrets = _load_infisical()
 
@@ -111,8 +118,8 @@ class Config:
             # Secrets from Infisical
             openai_api_key=secret("OPENAI_API_KEY"),
             ollama_api_key=secret("OLLAMA_API_KEY"),
-            slack_bot_token=secret("SLACK_BOT_TOKEN"),
-            slack_app_token=secret("SLACK_APP_TOKEN"),
+            slack_bot_token=optional_secret("SLACK_BOT_TOKEN"),
+            slack_app_token=optional_secret("SLACK_APP_TOKEN"),
             tavily_api_key=optional_secret("TAVILY_API_KEY"),
             exa_api_key=optional_secret("EXA_API_KEY"),
             db_url=db.get("url") or secret("DB_URL"),
@@ -135,6 +142,10 @@ class Config:
             workspace_dir=Path(app.get("workspace_dir", "/app/workspace")),
             groups_dir=Path(app.get("groups_dir", "/app/groups")),
             max_history_tokens=int(app["max_history_tokens"]) if app.get("max_history_tokens") else None,
+            # Comms channel config
+            comms_channel=comms_cfg.get("channel", "slack"),
+            webhook_host=comms_cfg.get("webhook_host", "bot"),
+            webhook_port=int(comms_cfg.get("webhook_port", 9000)),
         )
 
     @classmethod
@@ -148,6 +159,7 @@ def _load_infisical() -> dict[str, str]:
     client_id = os.environ.get("INFISICAL_CLIENT_ID")
     client_secret = os.environ.get("INFISICAL_CLIENT_SECRET")
     project_id = os.environ.get("INFISICAL_PROJECT_ID")
+    environment = os.environ.get("INFISICAL_ENVIRONMENT", "prod")
 
     if not client_id:
         raise ConfigError(
@@ -166,9 +178,10 @@ def _load_infisical() -> dict[str, str]:
             "Cannot connect to Infisical. The infisical-python package is not installed."
         )
 
+    site_url = os.environ.get("INFISICAL_URL", "https://app.infisical.com")
     try:
         client = InfisicalClient(
-            ClientSettings(client_id=client_id, client_secret=client_secret)
+            ClientSettings(client_id=client_id, client_secret=client_secret, site_url=site_url)
         )
     except Exception as exc:
         raise ConfigError(
@@ -194,13 +207,13 @@ def _load_infisical() -> dict[str, str]:
         try:
             val = client.getSecret(
                 GetSecretOptions(
-                    environment="prod",
+                    environment=environment,
                     project_id=project_id,
                     secret_name=name,
                 )
             )
-            if val and val.secretValue:
-                result[name] = val.secretValue
+            if val and val.secret_value:
+                result[name] = val.secret_value
         except Exception:
             pass
 

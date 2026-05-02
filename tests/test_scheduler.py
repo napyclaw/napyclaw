@@ -1,13 +1,12 @@
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from napyclaw.agent import Agent
 from napyclaw.app import GroupContext, GroupQueue
-from napyclaw.db import Database, ScheduledTask
+from napyclaw.db import ScheduledTask
 from napyclaw.models.base import ChatResponse
 from napyclaw.models.openai_client import LLMUnavailableError
 from napyclaw.scheduler import Scheduler
@@ -54,15 +53,53 @@ async def _make_task(db: Database, group_id: str = "C001", **overrides) -> Sched
     return task
 
 
+class _FakeDB:
+    """In-memory DB stub for scheduler tests."""
+
+    def __init__(self):
+        self._tasks: dict[str, ScheduledTask] = {}
+
+    async def save_scheduled_task(self, task: ScheduledTask) -> None:
+        self._tasks[task.id] = task
+
+    async def list_scheduled_tasks(self, group_id: str) -> list[ScheduledTask]:
+        return [t for t in self._tasks.values() if t.group_id == group_id]
+
+    async def list_due_tasks(self, now: str) -> list[ScheduledTask]:
+        return [
+            t for t in self._tasks.values()
+            if t.status == "active" and t.next_run is not None and t.next_run <= now
+        ]
+
+    async def update_task_status(
+        self,
+        task_id: str,
+        status: str,
+        next_run: str | None = None,
+        retry_count: int | None = None,
+    ) -> None:
+        if task_id not in self._tasks:
+            return
+        t = self._tasks[task_id]
+        from dataclasses import replace
+        self._tasks[task_id] = replace(
+            t,
+            status=status,
+            next_run=next_run if next_run is not None else t.next_run,
+            retry_count=retry_count if retry_count is not None else t.retry_count,
+        )
+
+    async def log_task_run(self, **_) -> None:
+        pass
+
+
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "test.db")
-    await database.init()
-    return database
+def db() -> _FakeDB:
+    return _FakeDB()
 
 
 class TestScheduler:
-    async def test_fires_due_task(self, db: Database):
+    async def test_fires_due_task(self, db: _FakeDB):
         ctx = _make_context()
         contexts = {"C001": ctx}
         channel = AsyncMock()
@@ -82,7 +119,7 @@ class TestScheduler:
         # Channel should receive the task result
         channel.send.assert_called_once_with("C001", "Task result")
 
-    async def test_once_task_completed_after_run(self, db: Database):
+    async def test_once_task_completed_after_run(self, db: _FakeDB):
         ctx = _make_context()
         contexts = {"C001": ctx}
         channel = AsyncMock()
@@ -96,7 +133,7 @@ class TestScheduler:
         tasks = await db.list_scheduled_tasks("C001")
         assert tasks[0].status == "completed"
 
-    async def test_interval_task_reschedules(self, db: Database):
+    async def test_interval_task_reschedules(self, db: _FakeDB):
         ctx = _make_context()
         contexts = {"C001": ctx}
         channel = AsyncMock()
@@ -114,7 +151,7 @@ class TestScheduler:
         assert tasks[0].next_run is not None
         assert tasks[0].next_run > task.next_run  # Next run is in the future
 
-    async def test_missing_group_pauses_task(self, db: Database):
+    async def test_missing_group_pauses_task(self, db: _FakeDB):
         contexts: dict = {}  # No contexts — group doesn't exist
         channel = AsyncMock()
         queue = GroupQueue()
@@ -128,7 +165,7 @@ class TestScheduler:
         assert tasks[0].status == "paused"
         channel.send.assert_not_called()
 
-    async def test_failure_increments_retry(self, db: Database):
+    async def test_failure_increments_retry(self, db: _FakeDB):
         client = MagicMock()
         client.provider = "ollama"
         client.model = "llama3.3:latest"
@@ -151,7 +188,7 @@ class TestScheduler:
         assert tasks[0].retry_count == 1
         assert tasks[0].status == "active"
 
-    async def test_max_retries_marks_failed(self, db: Database):
+    async def test_max_retries_marks_failed(self, db: _FakeDB):
         client = MagicMock()
         client.provider = "ollama"
         client.model = "llama3.3:latest"
@@ -176,7 +213,7 @@ class TestScheduler:
         tasks = await db.list_scheduled_tasks("C001")
         assert tasks[0].status == "failed"
 
-    async def test_model_override_uses_custom_client(self, db: Database):
+    async def test_model_override_uses_custom_client(self, db: _FakeDB):
         custom_client = MagicMock()
         custom_client.provider = "openai"
         custom_client.model = "gpt-4o"

@@ -358,6 +358,8 @@ Then add these secrets to your Infisical project (environment: `prod`):
 | `OLLAMA_API_KEY` | `ollama` | Yes (use `placeholder` if not using Ollama) |
 | `SLACK_BOT_TOKEN` | `xoxb-...` | Yes |
 | `SLACK_APP_TOKEN` | `xapp-...` | Yes |
+| `SLACK_OWNER_CHANNEL` | `C01234ABCDE` | Yes — channel ID where egress approval messages are sent |
+| `TS_AUTHKEY` | `tskey-auth-...` | Only if using the Tailscale sidecar for tailnet access |
 | `EXA_API_KEY` | `...` | Only if using Exa search fallback |
 | `TAVILY_API_KEY` | `tvly-...` | Only if using Tavily search fallback |
 | `DB_URL` | `postgresql://napyclaw:pass@localhost:5432/napyclaw` | Only if overriding `db.url` in napyclaw.toml |
@@ -375,13 +377,34 @@ Then add these secrets to your Infisical project (environment: `prod`):
 6. Add both tokens to Infisical as `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`.
 7. Invite the bot to any channels where you want it available.
 
-#### Step 4: Start the database
+#### Step 4: Start the stack
 
-napyclaw requires PostgreSQL + pgvector for all persistence (state, history, memory). A `docker-compose.yml` is included — it starts the database and automatically applies both migration scripts on first launch.
+napyclaw requires PostgreSQL + pgvector for all persistence (state, history, memory). A `docker-compose.yml` is included that starts the full stack: database, Redis, Infisical (secrets), SearXNG (search), and the bot services.
+
+If you've previously started any services (partial runs, failed starts), clear stale containers first:
+
+```bash
+docker compose down --remove-orphans
+```
+
+Then start everything:
 
 ```bash
 docker compose up -d
 ```
+
+**First-time Infisical setup:** On the very first run, start only the backend services to bootstrap Infisical before adding secrets:
+
+```bash
+docker compose up -d db redis infisical
+```
+
+Open `http://localhost:8888`, create an account, create a project (environment: `prod`), and create a Machine Identity under Access Control. Copy the Client ID, Client Secret, and Project ID into your `.env` file, then bring up the full stack.
+
+> **Warning:** Once Infisical is bootstrapped, never run `docker compose up <service>` without `--no-deps` on a running stack. Without that flag, Docker recreates the full dependency graph — including `db` and `infisical` — wiping all machine identities and secrets. Always restart individual services with:
+> ```bash
+> docker compose up -d --no-deps <service>
+> ```
 
 This starts PostgreSQL on port 5432 with the credentials from `docker-compose.yml`. Set `DB_URL` in Infisical to match:
 

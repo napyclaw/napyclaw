@@ -249,8 +249,15 @@ class InjectionGuard:
 
     @staticmethod
     def _parse_verdict(raw: str, expected_key: str, bag_id: int) -> GuardVerdict:
+        # Strip markdown code fences that some LLMs add despite instructions
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
         try:
-            data = json.loads(raw.strip())
+            data = json.loads(cleaned)
         except (json.JSONDecodeError, TypeError):
             return GuardVerdict(
                 risk="malicious", bag_id=bag_id, key_valid=False, raw_response=raw

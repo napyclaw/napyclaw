@@ -75,13 +75,21 @@ class Database:
         model: str,
         is_first_interaction: bool,
         history: list[dict],
+        job_title: str | None = None,
+        memory_enabled: bool = True,
+        channel_type: str = "slack",
+        job_description: str | None = None,
+        verbatim_turns: int = 7,
+        summary_turns: int = 5,
     ) -> None:
         await self.pool.execute(
             """
             INSERT INTO group_contexts
                 (group_id, default_name, display_name, nicknames, owner_id,
-                 provider, model, is_first_interaction, history)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 provider, model, is_first_interaction, history,
+                 job_title, memory_enabled, channel_type,
+                 job_description, verbatim_turns, summary_turns)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (group_id) DO UPDATE SET
                 default_name         = EXCLUDED.default_name,
                 display_name         = EXCLUDED.display_name,
@@ -90,17 +98,18 @@ class Database:
                 provider             = EXCLUDED.provider,
                 model                = EXCLUDED.model,
                 is_first_interaction = EXCLUDED.is_first_interaction,
-                history              = EXCLUDED.history
+                history              = EXCLUDED.history,
+                job_title            = EXCLUDED.job_title,
+                memory_enabled       = EXCLUDED.memory_enabled,
+                channel_type         = EXCLUDED.channel_type,
+                job_description      = EXCLUDED.job_description,
+                verbatim_turns       = EXCLUDED.verbatim_turns,
+                summary_turns        = EXCLUDED.summary_turns
             """,
-            group_id,
-            default_name,
-            display_name,
-            json.dumps(nicknames),
-            owner_id,
-            provider,
-            model,
-            is_first_interaction,
-            json.dumps(history),
+            group_id, default_name, display_name, json.dumps(nicknames),
+            owner_id, provider, model, is_first_interaction, json.dumps(history),
+            job_title, memory_enabled, channel_type,
+            job_description, verbatim_turns, summary_turns,
         )
 
     async def load_group_context(self, group_id: str) -> dict | None:
@@ -112,6 +121,104 @@ class Database:
     async def load_all_group_contexts(self) -> list[dict]:
         rows = await self.pool.fetch("SELECT * FROM group_contexts")
         return [_row_to_ctx(row) for row in rows]
+
+    async def load_webchat_specialists(self) -> list[dict]:
+        """Return webchat GroupContexts excluding the admin DM row."""
+        rows = await self.pool.fetch(
+            "SELECT * FROM group_contexts WHERE channel_type = 'webchat' AND group_id != 'admin'"
+        )
+        return [_row_to_ctx(row) for row in rows]
+
+    async def save_specialist_memory(
+        self,
+        id: str,
+        group_id: str,
+        type: str,
+        content: str,
+        embedding: list[float] | None,
+    ) -> None:
+        embedding_str = (
+            "[" + ",".join(str(x) for x in embedding) + "]"
+            if embedding else None
+        )
+        await self.pool.execute(
+            """
+            INSERT INTO specialist_memory (id, group_id, type, content, embedding)
+            VALUES ($1, $2, $3, $4, $5::vector)
+            ON CONFLICT (id) DO UPDATE SET
+                content    = EXCLUDED.content,
+                embedding  = EXCLUDED.embedding,
+                updated_at = now()
+            """,
+            id, group_id, type, content, embedding_str,
+        )
+
+    async def update_specialist_memory(self, id: str, content: str) -> None:
+        status = await self.pool.execute(
+            "UPDATE specialist_memory SET content = $1, updated_at = now() WHERE id = $2",
+            content, id,
+        )
+        if status == "UPDATE 0":
+            raise ValueError(f"specialist_memory entry not found: {id}")
+
+    async def delete_specialist_memory(self, id: str) -> None:
+        await self.pool.execute("DELETE FROM specialist_memory WHERE id = $1", id)
+
+    async def load_specialist_memory(
+        self,
+        group_id: str,
+        type_filter: str | None = None,
+    ) -> list[dict]:
+        if type_filter:
+            rows = await self.pool.fetch(
+                "SELECT id, group_id, type, content, created_at, updated_at "
+                "FROM specialist_memory WHERE group_id = $1 AND type = $2 "
+                "ORDER BY created_at",
+                group_id, type_filter,
+            )
+        else:
+            rows = await self.pool.fetch(
+                "SELECT id, group_id, type, content, created_at, updated_at "
+                "FROM specialist_memory WHERE group_id = $1 "
+                "ORDER BY created_at",
+                group_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def search_specialist_memory(
+        self,
+        group_id: str,
+        embedding: list[float],
+        type_filter: str | None = None,
+        top_k: int = 5,
+    ) -> list[dict]:
+        """Semantic search over specialist_memory using cosine similarity."""
+        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+        if type_filter:
+            rows = await self.pool.fetch(
+                """
+                SELECT id, group_id, type, content,
+                       1 - (embedding <=> $1::vector) AS similarity
+                FROM specialist_memory
+                WHERE group_id = $2 AND type = $3 AND embedding IS NOT NULL
+                ORDER BY embedding <=> $1::vector
+                LIMIT $4
+                """,
+                embedding_str, group_id, type_filter, top_k,
+            )
+        else:
+            rows = await self.pool.fetch(
+                """
+                SELECT id, group_id, type, content,
+                       1 - (embedding <=> $1::vector) AS similarity
+                FROM specialist_memory
+                WHERE group_id = $2 AND embedding IS NOT NULL
+                ORDER BY embedding <=> $1::vector
+                LIMIT $3
+                """,
+                embedding_str, group_id, top_k,
+            )
+        return [dict(row) for row in rows]
 
     async def save_scheduled_task(self, task: ScheduledTask) -> None:
         await self.pool.execute(
@@ -183,6 +290,7 @@ class Database:
             INSERT INTO task_run_log
                 (id, task_id, ran_at, status, result_snippet, duration_ms)
             VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (id) DO NOTHING
             """,
             id, task_id, ran_at, status, result_snippet, duration_ms,
         )
@@ -200,6 +308,7 @@ class Database:
             INSERT INTO shield_log
                 (id, group_id, sender_id, detection_types, timestamp)
             VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO NOTHING
             """,
             id, group_id, sender_id, json.dumps(detection_types), timestamp,
         )
@@ -216,6 +325,12 @@ def _row_to_ctx(row) -> dict:
         "model": row["model"],
         "is_first_interaction": bool(row["is_first_interaction"]),
         "history": json.loads(row["history"]),
+        "job_title": row["job_title"],
+        "memory_enabled": bool(row["memory_enabled"]) if row["memory_enabled"] is not None else True,
+        "channel_type": row["channel_type"] or "slack",
+        "job_description": row["job_description"],
+        "verbatim_turns": row["verbatim_turns"] if row["verbatim_turns"] is not None else 7,
+        "summary_turns": row["summary_turns"] if row["summary_turns"] is not None else 5,
     }
 
 

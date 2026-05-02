@@ -10,6 +10,7 @@ dependencies = [
     "infisical-python>=2.1",
     "openai>=1.30",
     "httpx>=0.27",
+    "aiohttp>=3.9",
     "slack-bolt>=1.18",
     "apscheduler>=3.10",
     "asyncpg>=0.29",

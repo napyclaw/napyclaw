@@ -25,6 +25,12 @@ class MemoryBackend(ABC):
         """Return a static context string (summary facts, not search results)."""
         ...
 
+    async def embed(self, text: str) -> list[float]:
+        return []
+
+    async def search_thoughts(self, embedding: list[float], group_id: str, top_k: int = 5) -> list[str]:
+        return []
+
 
 class NullMemory(MemoryBackend):
     """No-op backend for private sessions. Discards everything."""
@@ -147,3 +153,19 @@ class VectorMemory(MemoryBackend):
 
     async def load_context(self) -> str:
         return ""
+
+    async def embed(self, text: str) -> list[float]:
+        return await self._embed(text)
+
+    async def search_thoughts(self, embedding: list[float], group_id: str, top_k: int = 5) -> list[str]:
+        if not self._pool or not embedding:
+            return []
+        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+        try:
+            rows = await self._pool.fetch(
+                "SELECT content, similarity FROM match_thoughts($1::vector, $2, $3)",
+                embedding_str, group_id, top_k,
+            )
+            return [row["content"] for row in rows]
+        except Exception:
+            return []

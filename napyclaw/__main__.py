@@ -4,7 +4,7 @@ import signal
 import sys
 
 from napyclaw.app import GroupContext, NapyClaw
-from napyclaw.channels.slack import SlackChannel
+from napyclaw.channels.base import Channel
 from napyclaw.config import Config, ConfigError
 from napyclaw.db import Database
 from napyclaw.egress import EgressGuard, build_routed_client
@@ -17,9 +17,13 @@ from napyclaw.scheduler import Scheduler
 from napyclaw.shield import ContentShield
 from napyclaw.tools.file_ops import FileReadTool, FileWriteTool
 from napyclaw.tools.identity import AddNickname, ClearNicknames, ListModelsTool, RenameBotTool, SwitchModel
-from napyclaw.tools.memory_tool import SaveToMemoryTool
 from napyclaw.tools.messaging import SendMessageTool
 from napyclaw.tools.scheduling import ScheduleTaskTool
+from napyclaw.tools.specialist_tools import (
+    ManageSpecialistMemoryTool,
+    SaveToMemoryTool,
+    SetJobDescriptionTool,
+)
 from napyclaw.tools.web_search import ExaBackend, SearXNGBackend, TavilyBackend, WebSearchTool
 
 
@@ -37,7 +41,28 @@ async def main() -> None:
     await db.connect()
     print(f"  database connected ({config.db_url.split('@')[-1]})")
 
-    channel = SlackChannel(bot_token=config.slack_bot_token, app_token=config.slack_app_token)
+    if config.comms_channel == "webchat":
+        from napyclaw.channels.web import WebChannel
+        channel: Channel = WebChannel(
+            comms_url=config.comms_url,
+            webhook_host=config.webhook_host,
+            webhook_port=config.webhook_port,
+        )
+    elif config.comms_channel == "slack":
+        from napyclaw.channels.slack import SlackChannel
+        if not config.slack_bot_token or not config.slack_app_token:
+            raise RuntimeError(
+                "comms_channel = 'slack' requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN secrets."
+            )
+        channel = SlackChannel(
+            bot_token=config.slack_bot_token,
+            app_token=config.slack_app_token,
+        )
+    else:
+        raise RuntimeError(
+            f"Unknown comms_channel value '{config.comms_channel}'. "
+            "Expected 'webchat' or 'slack'."
+        )
     shield = ContentShield()
 
     # --- EgressGuard ---
@@ -114,7 +139,15 @@ async def main() -> None:
     injection_guard = InjectionGuard()
 
     # --- Tool factory ---
-    def build_tools(ctx: GroupContext):
+    async def _noop_notify(p: dict) -> None:
+        pass
+
+    async def _noop_embed(t: str) -> list[float]:
+        return []
+
+    def build_tools(ctx: GroupContext, notify=None, embed_fn=None):
+        _notify = notify or _noop_notify
+        _embed = embed_fn or _noop_embed
         tools = []
         if search_backends:
             tools.append(WebSearchTool(backends=search_backends))
@@ -128,28 +161,20 @@ async def main() -> None:
             ClearNicknames(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             SwitchModel(db=db, group_id=ctx.group_id, owner_id=ctx.owner_id),
             ListModelsTool(config=config, http_client=guarded_http),
-            SaveToMemoryTool(memory=memory, group_id=ctx.group_id),
+            SetJobDescriptionTool(db=db, ctx=ctx),
+            ManageSpecialistMemoryTool(
+                db=db,
+                group_id=ctx.group_id,
+                notify=_notify,
+                embed_fn=_embed,
+            ),
+            SaveToMemoryTool(
+                memory=memory,
+                group_id=ctx.group_id,
+                notify=_notify,
+            ),
         ]
         return tools
-
-    # --- System prompt factory ---
-    def build_system_prompt(ctx: GroupContext) -> str:
-        parts = [f"Your name is {ctx.display_name}."]
-
-        if ctx.nicknames:
-            parts.append(f"Your nicknames are: {', '.join(ctx.nicknames)}.")
-
-        if ctx.is_first_interaction:
-            parts.append(
-                "This is your first conversation in this channel. "
-                "Introduce yourself and ask if the user would like to give you a different name."
-            )
-
-        parts.append(
-            f"You are running on {ctx.active_client.provider}/{ctx.active_client.model}."
-        )
-
-        return " ".join(parts)
 
     # --- App ---
     app = NapyClaw(
@@ -158,7 +183,6 @@ async def main() -> None:
         channel=channel,
         build_tools=build_tools,
         build_client=build_client,
-        build_system_prompt=build_system_prompt,
         injection_guard=injection_guard,
         shield=shield,
         memory=memory,
@@ -172,8 +196,9 @@ async def main() -> None:
 
     # --- Start ---
     await app.start()
-    app.bot_user_id = channel.bot_user_id
-    print(f"  connected to Slack as {channel.bot_user_id}")
+    if config.comms_channel == "slack" and hasattr(channel, "bot_user_id"):
+        app.bot_user_id = channel.bot_user_id
+        print(f"  connected to Slack as {channel.bot_user_id}")
 
     # --- Scheduler ---
     scheduler = Scheduler(
@@ -193,7 +218,7 @@ async def main() -> None:
     def _signal_handler():
         stop.set()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _signal_handler)
@@ -201,10 +226,7 @@ async def main() -> None:
             # Windows doesn't support add_signal_handler
             pass
 
-    try:
-        await stop.wait()
-    except KeyboardInterrupt:
-        pass
+    await stop.wait()
 
     # --- Shutdown ---
     print("\nshutting down...")

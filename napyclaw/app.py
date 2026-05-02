@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+import aiohttp
 
 from napyclaw.agent import Agent, AgentLoopError
 from napyclaw.channels.base import Channel, Message
@@ -13,8 +16,14 @@ from napyclaw.injection_guard import InjectionGuard
 from napyclaw.memory import MemoryBackend
 from napyclaw.models.base import LLMClient
 from napyclaw.models.openai_client import LLMUnavailableError
+from napyclaw.prompt_builder import PromptBuilder, RetrievedMemory, SpecialistMemoryRow
 from napyclaw.shield import ContentShield
+from napyclaw.summarizer import Summarizer, should_summarize
 from napyclaw.tools.base import Tool
+
+_log = logging.getLogger(__name__)
+
+_bg_tasks: set[asyncio.Task] = set()
 
 _SEARCH_BLOCK = re.compile(
     r"<!-- SEARCH_RESULTS -->.*?<!-- /SEARCH_RESULTS -->",
@@ -36,6 +45,13 @@ class GroupContext:
     active_client: LLMClient
     is_first_interaction: bool
     agent: Agent
+    job_title: str | None = None
+    job_description: str | None = None
+    memory_enabled: bool = True
+    channel_type: str = "slack"
+    verbatim_turns: int = 7
+    summary_turns: int = 5
+    owner_name: str = "the user"
 
 
 class GroupQueue:
@@ -59,7 +75,6 @@ class NapyClaw:
         channel: Channel,
         build_tools: Any = None,
         build_client: Any = None,
-        build_system_prompt: Any = None,
         injection_guard: InjectionGuard | None = None,
         shield: ContentShield | None = None,
         memory: MemoryBackend | None = None,
@@ -73,11 +88,11 @@ class NapyClaw:
         self._injection_guard = injection_guard
         self._shield = shield
         self._memory = memory
+        self._prompt_builder = PromptBuilder()
 
         # Pluggable factories — set by start() or injected for testing
-        self._build_tools = build_tools or (lambda ctx: [])
+        self._build_tools = build_tools or (lambda ctx, **kw: [])
         self._build_client = build_client
-        self._build_system_prompt = build_system_prompt or self._default_system_prompt
 
     async def start(self) -> None:
         """Initialize and run napyclaw."""
@@ -104,14 +119,99 @@ class NapyClaw:
                     history=row["history"],
                     injection_guard=self._injection_guard,
                 ),
+                job_title=row.get("job_title"),
+                job_description=row.get("job_description"),
+                memory_enabled=row.get("memory_enabled", True),
+                channel_type=row.get("channel_type", "slack"),
+                verbatim_turns=row.get("verbatim_turns", 7),
+                summary_turns=row.get("summary_turns", 5),
+                owner_name=row.get("owner_id", "the user"),
             )
             ctx.agent.tools = self._build_tools(ctx)
-            ctx.agent.system_prompt = self._build_system_prompt(ctx)
+            ctx.agent.system_prompt = self._prompt_builder.build(
+                ctx,
+                RetrievedMemory(),
+                owner_name=ctx.owner_name,
+            )
             self.contexts[row["group_id"]] = ctx
 
         # Register message handler and connect
         self.channel.register_handler(self.handle_message)
+        if hasattr(self.channel, "register_control_handler"):
+            self.channel.register_control_handler(self._handle_control_event)
         await self.channel.connect()
+
+        # Seed admin DM only if it doesn't already exist
+        existing_admin = await self.db.load_group_context("admin")
+        if existing_admin is None:
+            await self.db.save_group_context(
+                group_id="admin",
+                default_name="Admin",
+                display_name="Admin",
+                nicknames=[],
+                owner_id="system",
+                provider=self.config.default_provider,
+                model=self.config.default_model,
+                is_first_interaction=False,
+                history=[],
+                job_title=None,
+                memory_enabled=False,
+                channel_type="webchat",
+            )
+
+        # Push specialist list to comms for sidebar rendering (webchat only)
+        if self.config.comms_channel == "webchat":
+            await self._sync_specialists()
+
+    async def _sync_specialists(self) -> None:
+        """Push current webchat specialist list to comms for sidebar rendering."""
+        specialists = await self.db.load_webchat_specialists()
+        payload = [
+            {
+                "group_id": s["group_id"],
+                "display_name": s["display_name"],
+                "nicknames": s["nicknames"],
+                "job_title": s["job_title"],
+            }
+            for s in specialists
+        ]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.config.comms_url}/specialists-sync",
+                    json={"specialists": payload},
+                ):
+                    pass
+        except Exception as exc:
+            _log.warning("_sync_specialists failed: %s", exc)
+
+    async def _handle_control_event(self, data: dict) -> None:
+        """Handle non-chat control events forwarded from the Backstage panel."""
+        event_type = data.get("type")
+        token = data.get("token", "")
+        if event_type == "memory_adjusted":
+            revised = data.get("revised_content", "")
+            if token and revised:
+                await self.db.update_specialist_memory(token, content=revised)
+        elif event_type == "memory_excluded":
+            if token:
+                await self.db.delete_specialist_memory(token)
+        elif event_type == "memory_approved":
+            content = data.get("content", "").strip()
+            entry_type = data.get("entry_type", "responsibility")
+            group_id = data.get("group_id", "")
+            if token and content and group_id:
+                try:
+                    embedding = await self._memory.embed(content) if self._memory else []
+                except Exception:
+                    embedding = []
+                await self.db.save_specialist_memory(
+                    id=token,
+                    group_id=group_id,
+                    type=entry_type,
+                    content=content,
+                    embedding=embedding or None,
+                )
 
     def _matches_trigger(self, text: str, context: GroupContext) -> bool:
         """Check if message text triggers the bot for this group."""
@@ -177,12 +277,15 @@ class NapyClaw:
             if self.bot_user_id and f"<@{self.bot_user_id}>" in msg.text:
                 should_create = True
 
+            if msg.channel_type == "webchat":
+                should_create = True
+
             if not should_create:
                 return  # No context, no trigger — store only
 
             # Create new group context
-            channel_name = msg.channel_name
-            default_name = channel_name[0].upper() + channel_name[1:] + "_napy"
+            display_name = msg.channel_name if msg.channel_name != msg.group_id else "Specialist"
+            default_name = display_name
 
             client = self._build_client(
                 self.config.default_provider, self.config.default_model
@@ -190,8 +293,8 @@ class NapyClaw:
             ctx = GroupContext(
                 group_id=msg.group_id,
                 default_name=default_name,
-                display_name=default_name,
-                nicknames=[],
+                display_name=display_name,
+                nicknames=[display_name] if display_name != "Specialist" else [],
                 owner_id=msg.sender_id,
                 active_client=client,
                 is_first_interaction=True,
@@ -202,13 +305,21 @@ class NapyClaw:
                     config=self.config,
                     injection_guard=self._injection_guard,
                 ),
+                channel_type=msg.channel_type,
+                owner_name=msg.sender_name or msg.sender_id,
             )
             ctx.agent.tools = self._build_tools(ctx)
-            ctx.agent.system_prompt = self._build_system_prompt(ctx)
+            ctx.agent.system_prompt = self._prompt_builder.build(
+                ctx,
+                RetrievedMemory(),
+                owner_name=ctx.owner_name,
+            )
             self.contexts[msg.group_id] = ctx
+            if msg.channel_type == "webchat":
+                await self._sync_specialists()
         else:
-            # Existing context — check trigger
-            if not self._matches_trigger(msg.text, ctx):
+            # Existing context — webchat messages are always directed; Slack requires a trigger
+            if msg.channel_type != "webchat" and not self._matches_trigger(msg.text, ctx):
                 return
 
         # Run agent through the group queue
@@ -216,16 +327,82 @@ class NapyClaw:
 
     async def _run_agent(self, context: GroupContext, msg: Message, text: str) -> None:
         """Execute agent and send response. Runs inside GroupQueue lock."""
-        # Inject relevant memories into system prompt for this turn
-        if self._memory:
-            memories = await self._memory.search(text, context.group_id)
-            base_prompt = self._build_system_prompt(context)
-            if memories:
-                memory_block = "\n\n## Relevant memories\n" + "\n".join(f"- {m}" for m in memories)
-                context.agent.system_prompt = base_prompt + memory_block
-            else:
-                context.agent.system_prompt = base_prompt
 
+        # Define notify callable — POSTs to comms /backstage/event
+        async def _notify_backstage(payload: dict) -> None:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.config.comms_url}/backstage/event",
+                        json={"group_id": context.group_id, "event": payload},
+                    ):
+                        pass
+            except Exception:
+                pass
+
+        # Build layered system prompt with retrieved memory
+        responsibilities: list[SpecialistMemoryRow] = []
+        working_context: list[SpecialistMemoryRow] = []
+        episodic: list[str] = []
+
+        if context.memory_enabled and self._memory:
+            try:
+                query_embedding = await self._memory.embed(text)
+            except Exception:
+                query_embedding = None
+
+            async def _load_responsibilities():
+                rows = await self.db.load_specialist_memory(
+                    context.group_id, type_filter="responsibility"
+                )
+                return [SpecialistMemoryRow(id=r["id"], type=r["type"], content=r["content"]) for r in rows]
+
+            async def _load_working_context():
+                if not query_embedding:
+                    return []
+                try:
+                    rows = await self.db.search_specialist_memory(
+                        group_id=context.group_id,
+                        embedding=query_embedding,
+                        top_k=5,
+                    )
+                    return [
+                        SpecialistMemoryRow(id=r["id"], type=r["type"], content=r["content"])
+                        for r in rows if r["type"] != "responsibility"
+                    ]
+                except Exception:
+                    return []
+
+            async def _load_episodic():
+                if not query_embedding:
+                    return []
+                try:
+                    return await self._memory.search_thoughts(query_embedding, context.group_id)
+                except Exception:
+                    return []
+
+            responsibilities, working_context, episodic = await asyncio.gather(
+                _load_responsibilities(),
+                _load_working_context(),
+                _load_episodic(),
+            )
+
+        retrieved = RetrievedMemory(
+            responsibilities=responsibilities,
+            working_context=working_context,
+            episodic=episodic,
+        )
+        context.agent.system_prompt = self._prompt_builder.build(
+            context, retrieved, owner_name=context.owner_name
+        )
+
+        # Rebuild tools with live notify/embed_fn so specialist tools have correct callables
+        embed_fn = self._memory.embed if self._memory else _noop_embed
+        context.agent.tools = self._build_tools(
+            context, notify=_notify_backstage, embed_fn=embed_fn
+        )
+
+        response: str | None = None
         try:
             await self.channel.set_typing(msg.group_id, True)
             response = await context.agent.run(text, sender_id=msg.sender_id)
@@ -241,11 +418,36 @@ class NapyClaw:
             await self.channel.set_typing(msg.group_id, False)
 
         # Capture exchange to memory — strip raw search results, keep synthesis
-        if self._memory and response:
+        if context.memory_enabled and self._memory and response:
             await self._memory.capture(
                 f"User: {text}\nAssistant: {_strip_search_results(response)}",
                 group_id=context.group_id,
             )
+
+        # Fire summarizer as background task when history crosses prune threshold
+        if should_summarize(
+            context.agent.history,
+            verbatim_turns=context.verbatim_turns,
+            summary_turns=context.summary_turns,
+        ):
+            identity_block = self._prompt_builder.build(
+                context, RetrievedMemory(), owner_name=context.owner_name
+            )
+            summarizer = Summarizer(
+                client=context.active_client,
+                notify=_notify_backstage,
+                embed_fn=embed_fn,
+            )
+            _task = asyncio.create_task(summarizer.run(
+                history=context.agent.history,
+                identity_block=identity_block,
+                group_id=context.group_id,
+                db=self.db,
+                verbatim_turns=context.verbatim_turns,
+                summary_turns=context.summary_turns,
+            ))
+            _bg_tasks.add(_task)
+            _task.add_done_callback(_bg_tasks.discard)
 
         # Persist context after each turn
         if context.is_first_interaction:
@@ -261,22 +463,18 @@ class NapyClaw:
             model=context.active_client.model,
             is_first_interaction=context.is_first_interaction,
             history=context.agent.history,
+            job_title=context.job_title,
+            memory_enabled=context.memory_enabled,
+            channel_type=context.channel_type,
+            job_description=context.job_description,
+            verbatim_turns=context.verbatim_turns,
+            summary_turns=context.summary_turns,
         )
 
-    def _default_system_prompt(self, ctx: GroupContext) -> str:
-        parts = [f"Your name is {ctx.display_name}."]
 
-        if ctx.nicknames:
-            parts.append(f"Your nicknames are: {', '.join(ctx.nicknames)}.")
+async def _noop_notify(p: dict) -> None:
+    pass
 
-        if ctx.is_first_interaction:
-            parts.append(
-                "This is your first conversation in this channel. "
-                "Introduce yourself and ask if the user would like to give you a different name."
-            )
 
-        parts.append(
-            f"You are running on {ctx.active_client.provider}/{ctx.active_client.model}."
-        )
-
-        return " ".join(parts)
+async def _noop_embed(t: str) -> list[float]:
+    return []

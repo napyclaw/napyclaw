@@ -53,6 +53,9 @@ class RenameBot(Tool):
                 model=ctx["model"],
                 is_first_interaction=ctx["is_first_interaction"],
                 history=ctx["history"],
+                job_title=ctx.get("job_title"),
+                memory_enabled=ctx.get("memory_enabled", True),
+                channel_type=ctx.get("channel_type", "slack"),
             )
             return f"Renamed to {new_name}"
         except Exception as exc:
@@ -98,6 +101,9 @@ class AddNickname(Tool):
                 model=ctx["model"],
                 is_first_interaction=ctx["is_first_interaction"],
                 history=ctx["history"],
+                job_title=ctx.get("job_title"),
+                memory_enabled=ctx.get("memory_enabled", True),
+                channel_type=ctx.get("channel_type", "slack"),
             )
             return f"Nickname '{nickname}' added"
         except Exception as exc:
@@ -136,6 +142,9 @@ class ClearNicknames(Tool):
                 model=ctx["model"],
                 is_first_interaction=ctx["is_first_interaction"],
                 history=ctx["history"],
+                job_title=ctx.get("job_title"),
+                memory_enabled=ctx.get("memory_enabled", True),
+                channel_type=ctx.get("channel_type", "slack"),
             )
             return "All nicknames cleared"
         except Exception as exc:
@@ -190,6 +199,9 @@ class SwitchModel(Tool):
                 model=model,
                 is_first_interaction=ctx["is_first_interaction"],
                 history=ctx["history"],
+                job_title=ctx.get("job_title"),
+                memory_enabled=ctx.get("memory_enabled", True),
+                channel_type=ctx.get("channel_type", "slack"),
             )
             return f"Switched to {provider}/{model}"
         except Exception as exc:
