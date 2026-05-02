@@ -65,6 +65,7 @@ services:
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID}
       INFISICAL_URL: http://infisical:8080
+      DB_URL: postgresql://napyclaw:napyclaw-local@db:5432/napyclaw
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/specialists')\""]
       interval: 10s

@@ -188,6 +188,9 @@
   #modal-cancel { background: var(--border); color: var(--text); }
   #modal-ok { background: var(--accent); color: var(--text); }
 
+  #hamburger { display: none; background: none; border: none; color: var(--muted);
+               cursor: pointer; font-size: 20px; padding: 0 8px; }
+
   /* mobile: collapse sidebar */
   @media (max-width: 600px) {
     #app { height: 100dvh; }
@@ -240,8 +243,6 @@
     #backstage.pending-tab #backstage-turns { display: none; }
     #backstage.turns-tab #backstage-sticky { display: none; }
   }
-  #hamburger { display: none; background: none; border: none; color: var(--muted);
-               cursor: pointer; font-size: 20px; padding: 0 8px; }
 
   /* --- Backstage column --- */
   #backstage {
