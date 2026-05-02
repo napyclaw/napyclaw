@@ -70,6 +70,19 @@
   }
   #chat-title { font-weight: 600; }
   #chat-role { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  #backstage-toggle {
+    display: none;
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 10px;
+  }
+  #backstage-toggle:hover { color: var(--text); border-color: var(--accent); }
+  #backstage-toggle:disabled { opacity: .45; cursor: default; }
   #rename-btn { margin-left: auto; color: var(--muted); font-size: 12px;
                 cursor: pointer; background: none; border: none; }
   #rename-btn:hover { color: var(--text); }
@@ -177,10 +190,55 @@
 
   /* mobile: collapse sidebar */
   @media (max-width: 600px) {
+    #app { height: 100dvh; }
     #sidebar { position: fixed; left: -100%; top: 0; height: 100%; z-index: 50;
                transition: left .2s; }
     #sidebar.open { left: 0; }
     #hamburger { display: flex; }
+    #backstage-toggle { display: inline-flex; }
+    #rename-btn { margin-left: 0; }
+    #chat-header { padding: 10px 12px; }
+    #chat-role { display: none; }
+    #messages { padding: 12px; }
+    #input-bar { padding: 10px 12px; }
+    .msg { max-width: 100%; }
+    #rename-form { width: 100%; }
+    #rename-form input { width: 100%; min-width: 0; }
+    #modal { width: min(320px, calc(100vw - 24px)); }
+    #backstage-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.45);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s;
+      z-index: 70;
+    }
+    #backstage-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #backstage {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      min-width: 0;
+      max-height: 82dvh;
+      border-left: none;
+      border-top: 1px solid var(--border);
+      border-top-left-radius: 18px;
+      border-top-right-radius: 18px;
+      transform: translateY(calc(100% - 54px));
+      transition: transform .22s ease;
+      z-index: 80;
+      box-shadow: 0 -18px 40px rgba(0,0,0,.35);
+    }
+    #backstage.open { transform: translateY(0); }
+    #backstage.pending-tab #backstage-turns { display: none; }
+    #backstage.turns-tab #backstage-sticky { display: none; }
   }
   #hamburger { display: none; background: none; border: none; color: var(--muted);
                cursor: pointer; font-size: 20px; padding: 0 8px; }
@@ -191,6 +249,61 @@
       background: var(--bg); border-left: 1px solid var(--border);
       display: flex; flex-direction: column; overflow: hidden;
       font-size: 12px;
+  }
+  #backstage-backdrop { display: none; }
+  #backstage-handle {
+      display: none;
+      width: 42px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--border);
+      margin: 8px auto 6px;
+      flex-shrink: 0;
+  }
+  #backstage-mobile-header {
+      display: none;
+      padding: 0 12px 8px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+  }
+  #backstage-mobile-title {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+  }
+  #backstage-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+  }
+  #backstage-close:hover { color: var(--text); }
+  #backstage-tabs {
+      display: none;
+      gap: 8px;
+      padding: 10px 12px 0;
+      flex-shrink: 0;
+  }
+  .backstage-tab {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 7px 10px;
+  }
+  .backstage-tab.active {
+      color: var(--text);
+      border-color: var(--accent);
+      background: rgba(29,78,216,.18);
   }
   #backstage-sticky {
       flex-shrink: 0; border-bottom: 1px solid var(--border);
@@ -258,6 +371,23 @@
     color: var(--muted);
   }
   #identity-name { color: var(--accent-lt); font-weight: 600; }
+  @media (max-width: 600px) {
+    #backstage-handle,
+    #backstage-mobile-header,
+    #backstage-tabs { display: flex; }
+    #backstage-handle { display: block; }
+    #backstage-sticky,
+    #backstage-turns { max-height: none; }
+    #backstage-sticky {
+      border-bottom: none;
+      flex: 1;
+      overflow-y: auto;
+    }
+    #backstage-turns {
+      flex: 1;
+      overflow-y: auto;
+    }
+  }
 </style>
 </head>
 <body>
@@ -290,6 +420,7 @@
       <button id="hamburger" onclick="toggleSidebar()">&#9776;</button>
       <span id="chat-title">Select a specialist</span>
       <span id="chat-role"></span>
+      <button id="backstage-toggle" onclick="toggleBackstage()">Backstage</button>
       <button id="rename-btn" onclick="openRename()" style="display:none">&#9999; rename</button>
       <form id="rename-form" onsubmit="submitRename(event)">
         <input id="rename-input" placeholder="New display name / nickname" maxlength="30">
@@ -305,7 +436,17 @@
   </div>
 
   <!-- Backstage -->
+  <div id="backstage-backdrop" onclick="closeBackstage()"></div>
   <div id="backstage">
+    <div id="backstage-handle"></div>
+    <div id="backstage-mobile-header">
+      <div id="backstage-mobile-title">Backstage</div>
+      <button id="backstage-close" onclick="closeBackstage()">&times;</button>
+    </div>
+    <div id="backstage-tabs">
+      <button id="backstage-tab-pending" class="backstage-tab" onclick="setBackstageTab('pending')">Pending</button>
+      <button id="backstage-tab-turns" class="backstage-tab" onclick="setBackstageTab('turns')">Turns</button>
+    </div>
     <div id="backstage-sticky"></div>
     <div id="backstage-turns"></div>
   </div>
@@ -337,6 +478,8 @@ let specialists = [];
 let pendingApprovals = 0;
 // identity
 let ownerName = '';
+const hydratedGroups = new Set();
+let backstageTab = 'pending';
 
 // ---- WebSocket ----
 
@@ -392,6 +535,47 @@ function connect() {
 
 function reconnect() { connect(); }
 
+function isMobileLayout() {
+  return window.matchMedia('(max-width: 600px)').matches;
+}
+
+function setBackstageTab(tab) {
+  backstageTab = tab;
+  renderBackstageTabState();
+}
+
+function renderBackstageTabState() {
+  const backstage = document.getElementById('backstage');
+  backstage.classList.toggle('pending-tab', backstageTab === 'pending');
+  backstage.classList.toggle('turns-tab', backstageTab === 'turns');
+  document.getElementById('backstage-tab-pending').classList.toggle('active', backstageTab === 'pending');
+  document.getElementById('backstage-tab-turns').classList.toggle('active', backstageTab === 'turns');
+}
+
+function openBackstage(tab = null) {
+  if (tab) backstageTab = tab;
+  renderBackstageTabState();
+  if (!isMobileLayout()) return;
+  document.getElementById('backstage').classList.add('open');
+  document.getElementById('backstage-backdrop').classList.add('open');
+}
+
+function closeBackstage() {
+  if (!isMobileLayout()) return;
+  document.getElementById('backstage').classList.remove('open');
+  document.getElementById('backstage-backdrop').classList.remove('open');
+}
+
+function toggleBackstage() {
+  if (!isMobileLayout()) return;
+  const backstage = document.getElementById('backstage');
+  if (backstage.classList.contains('open')) {
+    closeBackstage();
+  } else {
+    openBackstage();
+  }
+}
+
 // ---- Identity ----
 
 async function loadIdentity() {
@@ -413,6 +597,28 @@ async function loadSpecialists() {
   renderSidebar();
 }
 
+async function loadHistory(groupId) {
+  if (!groupId || hydratedGroups.has(groupId)) return;
+  try {
+    const resp = await fetch(`/history/${encodeURIComponent(groupId)}`);
+    if (!resp.ok) return;
+    const persisted = await resp.json();
+    const existing = messages[groupId] || [];
+    const sticky = existing.filter(m => m.role === 'approval');
+    const live = existing.filter(m => m.role === 'user' || m.role === 'assistant');
+    messages[groupId] = [...persisted];
+    live.forEach(m => {
+      if (!messages[groupId].some(existingMsg => existingMsg.role === m.role && existingMsg.text === m.text)) {
+        messages[groupId].push(m);
+      }
+    });
+    messages[groupId].push(...sticky);
+    hydratedGroups.add(groupId);
+  } catch (e) {
+    // Keep the current in-memory state if the bootstrap fetch fails.
+  }
+}
+
 function renderSidebar() {
   const list = document.getElementById('specialist-list');
   list.innerHTML = '';
@@ -429,9 +635,20 @@ function renderSidebar() {
   document.getElementById('admin-btn').classList.toggle('active', currentGroup === 'admin');
 }
 
-function selectGroup(groupId) {
+function updateBackstageToggle() {
+  const toggle = document.getElementById('backstage-toggle');
+  const stickyCount = _pendingMemoryApprovals.length + _correctionWindow.length;
+  toggle.textContent = stickyCount > 0 ? `Backstage (${stickyCount})` : 'Backstage';
+  toggle.disabled = !currentGroup;
+  document.getElementById('backstage-tab-pending').textContent =
+    stickyCount > 0 ? `Pending (${stickyCount})` : 'Pending';
+}
+
+async function selectGroup(groupId) {
   currentGroup = groupId;
+  await loadHistory(groupId);
   renderSidebar();
+  updateBackstageToggle();
 
   const spec = specialists.find(s => s.group_id === groupId)
     || (groupId === 'admin' ? { display_name: 'Admin', nicknames: ['Admin'], job_title: 'System' } : null);
@@ -464,6 +681,7 @@ function selectGroup(groupId) {
 
   // Close sidebar on mobile
   document.getElementById('sidebar').classList.remove('open');
+  closeBackstage();
 }
 
 // ---- Messages ----
@@ -520,6 +738,7 @@ function buildBubble(role, text, turnIndex) {
 }
 
 function focusTurnInBackstage(turnIndex) {
+  if (isMobileLayout()) openBackstage('turns');
   const turns = document.querySelectorAll('.backstage-turn');
   turns.forEach(el => el.classList.remove('open', 'focused'));
   const target = [...turns].find(el => parseInt(el.dataset.turnIndex) === turnIndex);
@@ -538,10 +757,10 @@ function buildApprovalCard(data) {
     <h4>&#9888; Egress Approval Needed</h4>
     <div class="domain">Domain: <strong>${esc(data.hostname)}</strong></div>
     <div class="actions">
-      <button class="approve" onclick="respond('approve_once',this.closest('.approval-card'))">Approve Once</button>
-      <button class="approve" onclick="respond('approve_always',this.closest('.approval-card'))">Approve Always</button>
-      <button class="deny" onclick="respond('deny_once',this.closest('.approval-card'))">Deny Once</button>
-      <button class="deny" onclick="respond('deny_always',this.closest('.approval-card'))">Deny Always</button>
+      <button class="approve" onclick="void respond('approve_once',this.closest('.approval-card'))">Approve Once</button>
+      <button class="approve" onclick="void respond('approve_always',this.closest('.approval-card'))">Approve Always</button>
+      <button class="deny" onclick="void respond('deny_once',this.closest('.approval-card'))">Deny Once</button>
+      <button class="deny" onclick="void respond('deny_always',this.closest('.approval-card'))">Deny Always</button>
     </div>`;
   return div;
 }
@@ -758,6 +977,7 @@ function renderBackstageSticky() {
   _correctionWindow.forEach(item => {
     sticky.appendChild(buildBsQueuedCard(item));
   });
+  updateBackstageToggle();
 }
 
 function buildBsApprovalCard(item) {
@@ -799,6 +1019,7 @@ function bsApprove(card) {
   card.remove();
   const idx = _pendingMemoryApprovals.findIndex(i => i.token === token);
   if (idx >= 0) _pendingMemoryApprovals.splice(idx, 1);
+  updateBackstageToggle();
 }
 
 function bsReject(card) {
@@ -809,6 +1030,7 @@ function bsReject(card) {
   card.remove();
   const idx = _pendingMemoryApprovals.findIndex(i => i.token === token);
   if (idx >= 0) _pendingMemoryApprovals.splice(idx, 1);
+  updateBackstageToggle();
 }
 
 function bsAdjustOpen(card) {
@@ -828,6 +1050,7 @@ function bsAdjustKey(e, card) {
     card.remove();
     const idx = _correctionWindow.findIndex(i => i.token === token);
     if (idx >= 0) _correctionWindow.splice(idx, 1);
+    updateBackstageToggle();
   }
 }
 
@@ -839,6 +1062,7 @@ function bsExclude(card) {
   card.remove();
   const idx = _correctionWindow.findIndex(i => i.token === token);
   if (idx >= 0) _correctionWindow.splice(idx, 1);
+  updateBackstageToggle();
 }
 
 // ---- Utils ----
@@ -856,8 +1080,14 @@ function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
 }
 
+window.addEventListener('resize', () => {
+  if (!isMobileLayout()) closeBackstage();
+});
+
 // ---- Init ----
 
+renderBackstageTabState();
+updateBackstageToggle();
 connect();
 loadSpecialists();
 loadIdentity();

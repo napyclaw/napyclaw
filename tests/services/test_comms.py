@@ -1,7 +1,29 @@
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
-from starlette.testclient import TestClient as SyncClient
+
+
+class _FakeRow(dict):
+    def __getitem__(self, key):
+        return super().__getitem__(key)
+
+
+class _FakeWebSocket:
+    def __init__(self, inbound: list[dict]):
+        self._inbound = inbound
+        self.sent: list[dict] = []
+        self.accepted = False
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def iter_json(self):
+        for item in self._inbound:
+            yield item
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent.append(payload)
 
 
 @pytest.fixture
@@ -21,6 +43,8 @@ async def client(monkeypatch):
         comms_main._bot_webhook = None
         comms_main._ws_connection = None
         comms_main._specialists = []
+        comms_main._message_buffer = {}
+        comms_main._db_pool = None
         comms_main._pending_approvals = {}
         comms_main._pending_memory_approvals = {}
         comms_main._correction_window = {}
@@ -57,20 +81,20 @@ async def test_register_bot_webhook(client):
     assert resp.status_code == 200
 
 
-def test_ws_receive_message_dispatches_to_webhook():
+async def test_ws_receive_message_dispatches_to_webhook():
     """Browser message over WS is forwarded to bot webhook."""
     import services.comms.main as m
     m._bot_webhook = "http://bot:9000/inbound"
     m._ws_connection = None
 
     with patch("services.comms.main._http_post", new_callable=AsyncMock) as mock_post:
-        with SyncClient(m.app) as c:
-            with c.websocket_connect("/ws") as ws:
-                ws.send_json({
-                    "type": "message",
-                    "group_id": "grp-1",
-                    "text": "Hello"
-                })
+        ws = _FakeWebSocket([{
+            "type": "message",
+            "group_id": "grp-1",
+            "text": "Hello",
+        }])
+        await m.websocket_endpoint(ws)
+        await asyncio.sleep(0)
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert call_args[0][1]["group_id"] == "grp-1"
@@ -119,6 +143,75 @@ async def test_specialists_sync_and_get(client):
     assert data[0]["group_id"] == "g1"
 
 
+async def test_specialists_get_falls_back_to_db(client):
+    import services.comms.main as m
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch.return_value = [
+        _FakeRow({
+            "group_id": "g-db",
+            "display_name": "Persisted",
+            "nicknames": '["Persisted"]',
+            "job_title": "Research",
+        }),
+    ]
+    m._db_pool = fake_pool
+    m._specialists = []
+
+    c, _ = client
+    resp = await c.get("/specialists")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data[0]["group_id"] == "g-db"
+    assert data[0]["nicknames"] == ["Persisted"]
+
+
+async def test_history_endpoint_uses_persisted_history_and_buffer(client):
+    import services.comms.main as m
+
+    fake_pool = AsyncMock()
+    fake_pool.fetchrow.return_value = _FakeRow({
+        "history": '[{"role":"user","content":"older"},{"role":"assistant","content":"reply"}]',
+    })
+    m._db_pool = fake_pool
+    m._message_buffer = {
+        "grp-1": [{"role": "user", "text": "newer"}],
+    }
+
+    c, _ = client
+    resp = await c.get("/history/grp-1")
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"role": "user", "text": "older"},
+        {"role": "assistant", "text": "reply"},
+        {"role": "user", "text": "newer"},
+    ]
+
+
+async def test_ws_hello_replays_persisted_history():
+    import services.comms.main as m
+
+    fake_pool = AsyncMock()
+    fake_pool.fetchrow.return_value = _FakeRow({
+        "history": '[{"role":"user","content":"older"},{"role":"assistant","content":"reply"}]',
+    })
+    m._db_pool = fake_pool
+    m._message_buffer = {}
+    m._ws_connection = None
+
+    ws = _FakeWebSocket([{
+        "type": "hello",
+        "group_id": "grp-1",
+        "owner_name": "Nathan",
+    }])
+    await m.websocket_endpoint(ws)
+    first, second = ws.sent
+
+    assert first["replayed"] is True
+    assert first["text"] == "older"
+    assert second["text"] == "reply"
+
+
 async def test_approval_respond_posts_to_egressguard(client):
     """POST /approval/respond forwards decision to egressguard callback URL."""
     import services.comms.main as m
@@ -136,7 +229,7 @@ async def test_approval_respond_posts_to_egressguard(client):
     assert "tok-abc" in call_url
 
 
-def test_ws_hello_sets_owner_name_forwarded_in_message():
+async def test_ws_hello_sets_owner_name_forwarded_in_message():
     """WS hello with owner_name is forwarded as sender_name in subsequent message payload."""
     import services.comms.main as m
     m._bot_webhook = "http://bot:9000/inbound"
@@ -144,17 +237,19 @@ def test_ws_hello_sets_owner_name_forwarded_in_message():
     m._ws_connection = None
 
     with patch("services.comms.main._http_post", new_callable=AsyncMock) as mock_post:
-        with SyncClient(m.app) as c:
-            with c.websocket_connect("/ws") as ws:
-                ws.send_json({
-                    "type": "hello",
-                    "owner_name": "Nathan",
-                })
-                ws.send_json({
-                    "type": "message",
-                    "group_id": "grp-1",
-                    "text": "Hello from Nathan",
-                })
+        ws = _FakeWebSocket([
+            {
+                "type": "hello",
+                "owner_name": "Nathan",
+            },
+            {
+                "type": "message",
+                "group_id": "grp-1",
+                "text": "Hello from Nathan",
+            },
+        ])
+        await m.websocket_endpoint(ws)
+        await asyncio.sleep(0)
         mock_post.assert_called_once()
         payload = mock_post.call_args[0][1]
         assert payload["sender_name"] == "Nathan"
@@ -183,7 +278,7 @@ async def test_backstage_event_stores_pending_memory_approval(client):
     assert stored["group_id"] == "grp-sales"
 
 
-def test_ws_memory_approved_forwards_with_content():
+async def test_ws_memory_approved_forwards_with_content():
     """WS memory_approved message is enriched with stored content before forwarding."""
     import services.comms.main as m
     m._bot_webhook = "http://bot:9000/inbound"
@@ -197,12 +292,12 @@ def test_ws_memory_approved_forwards_with_content():
     }
 
     with patch("services.comms.main._http_post", new_callable=AsyncMock) as mock_post:
-        with SyncClient(m.app) as c:
-            with c.websocket_connect("/ws") as ws:
-                ws.send_json({
-                    "type": "memory_approved",
-                    "token": "tok-mem-2",
-                })
+        ws = _FakeWebSocket([{
+            "type": "memory_approved",
+            "token": "tok-mem-2",
+        }])
+        await m.websocket_endpoint(ws)
+        await asyncio.sleep(0)
         mock_post.assert_called_once()
         payload = mock_post.call_args[0][1]
         assert payload["type"] == "memory_approved"
